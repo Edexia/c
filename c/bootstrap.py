@@ -274,6 +274,58 @@ def bootstrap_qwk_paired(
     return win_matrix, avg_qwk_by_idx
 
 
+def bootstrap_qwk_combined(
+    predicted: list[int],
+    ground_truth: list[int],
+    teacher_noise: TeacherNoiseModel,
+    stability_vector: StabilityVector,
+    n_iterations: int = 1000,
+    seed: int = 42,
+    confidence_level: float = 0.95,
+) -> tuple[float, float, float]:
+    """Compute QWK CI with ALL noise sources combined.
+
+    Applies all three variance sources simultaneously in each bootstrap iteration:
+    1. Resample essays (sampling variance)
+    2. Apply GT noise to resampled ground truth
+    3. Apply grading noise to resampled predictions
+
+    This gives the total uncertainty incorporating all sources of error.
+
+    Returns:
+        Tuple of (mean_qwk, lower_ci, upper_ci).
+    """
+    rng = np.random.default_rng(seed)
+    n_samples = len(predicted)
+    all_grades = predicted + ground_truth
+    min_grade = min(all_grades)
+    max_grade = max(all_grades)
+    qwk_scores = []
+
+    for _ in range(n_iterations):
+        # 1. Resample essays
+        indices = rng.integers(0, n_samples, size=n_samples)
+        sampled_predicted = [predicted[idx] for idx in indices]
+        sampled_gt = [ground_truth[idx] for idx in indices]
+
+        # 2. Apply GT noise to resampled ground truth
+        noised_gt = [
+            apply_gt_noise(gt, rng, teacher_noise, min_grade, max_grade)
+            for gt in sampled_gt
+        ]
+
+        # 3. Apply grading noise to resampled predictions
+        noised_predicted = [
+            apply_grading_noise(pred, stability_vector, rng, min_grade, max_grade)
+            for pred in sampled_predicted
+        ]
+
+        qwk = compute_qwk(noised_predicted, noised_gt)
+        qwk_scores.append(qwk)
+
+    return _compute_ci(qwk_scores, confidence_level)
+
+
 def get_default_stability_vector() -> StabilityVector:
     """Get a default grading stability vector."""
     return {

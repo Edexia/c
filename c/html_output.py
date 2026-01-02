@@ -15,6 +15,11 @@ def generate_html(result: FullAnalysisResult, noise_assumption: str = "expected"
     """Generate a self-contained HTML report from analysis results."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    # Build summary comment for IDE viewing
+    summary_comment = ""
+    if result.summary_markdown:
+        summary_comment = f"<!--\nSUMMARY\n\n{result.summary_markdown}\n-->\n"
+
     qwk_chart_svg = generate_qwk_bar_chart(result)
     comparison_svg = ""
     if result.comparison:
@@ -51,7 +56,7 @@ def generate_html(result: FullAnalysisResult, noise_assumption: str = "expected"
         grades_table_modal = generate_modal_html(result.grades_table)
         grades_table_js = generate_grades_table_js(result.grades_table)
 
-    html = f'''<!DOCTYPE html>
+    html = f'''{summary_comment}<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -272,6 +277,7 @@ def generate_individual_section(result: AnalysisResult, label: str) -> str:
     gt_mean, gt_lower, gt_upper = qwk.gt_noise_ci
     grading_mean, grading_lower, grading_upper = qwk.grading_noise_ci
     sampling_mean, sampling_lower, sampling_upper = qwk.sampling_ci
+    combined_mean, combined_lower, combined_upper = qwk.combined_ci
 
     def format_ci(mean: float, lower: float, upper: float) -> str:
         if math.isnan(mean):
@@ -325,6 +331,11 @@ def generate_individual_section(result: AnalysisResult, label: str) -> str:
                     <td>{sampling_mean:.4f}</td>
                     <td>[{sampling_lower:.3f}, {sampling_upper:.3f}]</td>
                 </tr>
+                <tr>
+                    <td><strong>Combined (All Noise)</strong></td>
+                    <td><strong>{combined_mean:.4f}</strong></td>
+                    <td><strong>[{combined_lower:.3f}, {combined_upper:.3f}]</strong></td>
+                </tr>
             </tbody>
         </table>
     </section>
@@ -332,14 +343,14 @@ def generate_individual_section(result: AnalysisResult, label: str) -> str:
 
 
 def generate_qwk_bar_chart(result: FullAnalysisResult) -> str:
-    """Generate SVG bar chart showing QWK with 3 CI bars per file."""
+    """Generate SVG bar chart showing QWK with 4 CI bars per file."""
     n_files = len(result.individual_results)
     if n_files == 0:
         return ""
 
     bar_width = 20
-    group_width = bar_width * 3 + 30
-    chart_width = max(400, n_files * group_width + 100)
+    group_width = bar_width * 4 + 40
+    chart_width = max(400, n_files * group_width + 120)
     chart_height = 300
     margin_left = 50
     margin_bottom = 60
@@ -351,6 +362,7 @@ def generate_qwk_bar_chart(result: FullAnalysisResult) -> str:
         'gt': '#ef4444',
         'grading': '#3b82f6',
         'sampling': '#22c55e',
+        'combined': '#8b5cf6',
     }
 
     bars_svg = []
@@ -364,7 +376,7 @@ def generate_qwk_bar_chart(result: FullAnalysisResult) -> str:
         raw_y = margin_top + plot_height * (1 - qwk.raw_qwk)
 
         bars_svg.append(f'''
-            <line x1="{group_x - 5}" y1="{raw_y}" x2="{group_x + bar_width * 3 + 5}" y2="{raw_y}"
+            <line x1="{group_x - 5}" y1="{raw_y}" x2="{group_x + bar_width * 4 + 10}" y2="{raw_y}"
                   stroke="#111" stroke-width="2" stroke-dasharray="4"/>
         ''')
 
@@ -372,6 +384,7 @@ def generate_qwk_bar_chart(result: FullAnalysisResult) -> str:
             ('gt', qwk.gt_noise_ci),
             ('grading', qwk.grading_noise_ci),
             ('sampling', qwk.sampling_ci),
+            ('combined', qwk.combined_ci),
         ]
 
         for bar_idx, (ci_type, (mean, lower, upper)) in enumerate(ci_data):
@@ -395,7 +408,7 @@ def generate_qwk_bar_chart(result: FullAnalysisResult) -> str:
             ''')
 
         bars_svg.append(f'''
-            <text x="{group_x + bar_width * 1.5}" y="{chart_height - margin_bottom + 20}"
+            <text x="{group_x + bar_width * 2}" y="{chart_height - margin_bottom + 20}"
                   text-anchor="middle" font-size="12" font-weight="bold">{label}</text>
         ''')
 
@@ -417,8 +430,10 @@ def generate_qwk_bar_chart(result: FullAnalysisResult) -> str:
             <text x="15" y="24" font-size="10">Grading Noise</text>
             <rect x="0" y="30" width="10" height="10" fill="{colors['sampling']}"/>
             <text x="15" y="39" font-size="10">Sampling</text>
-            <line x1="0" y1="50" x2="20" y2="50" stroke="#111" stroke-width="2" stroke-dasharray="4"/>
-            <text x="25" y="54" font-size="10">Raw QWK</text>
+            <rect x="0" y="45" width="10" height="10" fill="{colors['combined']}"/>
+            <text x="15" y="54" font-size="10">Combined</text>
+            <line x1="0" y1="65" x2="20" y2="65" stroke="#111" stroke-width="2" stroke-dasharray="4"/>
+            <text x="25" y="69" font-size="10">Raw QWK</text>
         </g>
     '''
 

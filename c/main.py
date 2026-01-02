@@ -33,6 +33,50 @@ from .core import (
 from .edf_cache import EDFCache
 from .bootstrap import get_default_stability_vector
 from .html_output import save_html_report
+from .core import FullAnalysisResult
+
+
+def generate_summary_markdown(result: FullAnalysisResult) -> str:
+    """Generate a markdown summary of analysis results."""
+    lines = []
+    lines.append("=" * 60)
+    lines.append("Results Summary")
+    lines.append("=" * 60)
+
+    for idx, res in enumerate(result.individual_results):
+        label = result.labels[idx] if idx < len(result.labels) else str(idx)
+        qwk = res.qwk_result
+        lines.append("")
+        lines.append(f"[{label}] {res.egf_name}")
+        lines.append(f"    Raw QWK: {qwk.raw_qwk:.4f}")
+        lines.append(f"    Exact Acc: {qwk.exact_accuracy:.1%} | Near Acc: {qwk.near_accuracy:.1%}")
+        gt_mean, gt_lower, gt_upper = qwk.gt_noise_ci
+        lines.append(f"    GT Noise CI: [{gt_lower:.3f}, {gt_upper:.3f}]")
+        grading_mean, grading_lower, grading_upper = qwk.grading_noise_ci
+        lines.append(f"    Grading Noise CI: [{grading_lower:.3f}, {grading_upper:.3f}]")
+        sampling_mean, sampling_lower, sampling_upper = qwk.sampling_ci
+        lines.append(f"    Sampling CI: [{sampling_lower:.3f}, {sampling_upper:.3f}]")
+        combined_mean, combined_lower, combined_upper = qwk.combined_ci
+        lines.append(f"    Combined CI: [{combined_lower:.3f}, {combined_upper:.3f}]")
+
+    if result.comparison and len(result.labels) > 1:
+        lines.append("")
+        lines.append("Comparison Matrix P(Row > Col):")
+        n = len(result.labels)
+        header = "     " + "  ".join(f"{l:>5}" for l in result.labels[:n])
+        lines.append(header)
+        for i in range(n):
+            row = f"{result.labels[i]:>4} "
+            for j in range(n):
+                if i == j:
+                    row += "    - "
+                else:
+                    p = result.comparison.win_matrix.get((i, j), 0.5)
+                    row += f" {p:4.0%} "
+            lines.append(row)
+
+    lines.append("=" * 60)
+    return "\n".join(lines)
 
 
 def parse_args() -> argparse.Namespace:
@@ -263,6 +307,9 @@ def run_analysis(
         except Exception as e:
             print(f"  Warning: Failed to build grades table: {e}", file=sys.stderr)
 
+    # Generate summary and store it in the result for HTML embedding
+    result.summary_markdown = generate_summary_markdown(result)
+
     if output_path is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         if len(egf_data_list) == 1:
@@ -278,38 +325,8 @@ def run_analysis(
     if not quiet:
         webbrowser.open(output_path.resolve().as_uri())
 
-    print("\n" + "="*60)
-    print("Results Summary")
-    print("="*60)
-    for idx, res in enumerate(result.individual_results):
-        label = result.labels[idx] if idx < len(result.labels) else str(idx)
-        qwk = res.qwk_result
-        print(f"\n[{label}] {res.egf_name}")
-        print(f"    Raw QWK: {qwk.raw_qwk:.4f}")
-        print(f"    Exact Acc: {qwk.exact_accuracy:.1%} | Near Acc: {qwk.near_accuracy:.1%}")
-        gt_mean, gt_lower, gt_upper = qwk.gt_noise_ci
-        print(f"    GT Noise CI: [{gt_lower:.3f}, {gt_upper:.3f}]")
-        grading_mean, grading_lower, grading_upper = qwk.grading_noise_ci
-        print(f"    Grading Noise CI: [{grading_lower:.3f}, {grading_upper:.3f}]")
-        sampling_mean, sampling_lower, sampling_upper = qwk.sampling_ci
-        print(f"    Sampling CI: [{sampling_lower:.3f}, {sampling_upper:.3f}]")
-
-    if result.comparison and len(result.labels) > 1:
-        print("\nComparison Matrix P(Row > Col):")
-        n = len(result.labels)
-        header = "     " + "  ".join(f"{l:>5}" for l in result.labels[:n])
-        print(header)
-        for i in range(n):
-            row = f"{result.labels[i]:>4} "
-            for j in range(n):
-                if i == j:
-                    row += "    - "
-                else:
-                    p = result.comparison.win_matrix.get((i, j), 0.5)
-                    row += f" {p:4.0%} "
-            print(row)
-
-    print("="*60)
+    # Print summary to terminal
+    print("\n" + result.summary_markdown)
 
 
 def main() -> None:

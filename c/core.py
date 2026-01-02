@@ -14,6 +14,7 @@ from .bootstrap import (
     bootstrap_qwk_gt_only,
     bootstrap_qwk_grading_only,
     bootstrap_qwk_sampling_only,
+    bootstrap_qwk_combined,
     bootstrap_qwk_paired,
     get_default_stability_vector,
 )
@@ -46,7 +47,7 @@ class EDFData:
 
 @dataclass
 class QWKResult:
-    """QWK result with confidence intervals for 3 variance components."""
+    """QWK result with confidence intervals for 4 variance components."""
     raw_qwk: float
     exact_accuracy: float
     near_accuracy: float
@@ -55,6 +56,7 @@ class QWKResult:
     gt_noise_ci: tuple[float, float, float]
     grading_noise_ci: tuple[float, float, float]
     sampling_ci: tuple[float, float, float]
+    combined_ci: tuple[float, float, float]
 
 
 @dataclass
@@ -117,6 +119,7 @@ class FullAnalysisResult:
     labels: list[str] = field(default_factory=list)
     legend: dict[str, str] = field(default_factory=dict)
     grades_table: Optional[GradesTableData] = None
+    summary_markdown: Optional[str] = None
 
 
 def load_egf_data(egf_path: Path) -> EGFData:
@@ -255,6 +258,9 @@ def analyze_egf(
     gt_ci = bootstrap_qwk_gt_only(predicted, ground_truth, teacher_noise, seed=seed)
     grading_ci = bootstrap_qwk_grading_only(predicted, ground_truth, stability_vector, seed=seed)
     sampling_ci = bootstrap_qwk_sampling_only(predicted, ground_truth, seed=seed)
+    combined_ci = bootstrap_qwk_combined(
+        predicted, ground_truth, teacher_noise, stability_vector, seed=seed
+    )
 
     qwk_result = QWKResult(
         raw_qwk=raw_qwk,
@@ -264,6 +270,7 @@ def analyze_egf(
         gt_noise_ci=gt_ci,
         grading_noise_ci=grading_ci,
         sampling_ci=sampling_ci,
+        combined_ci=combined_ci,
     )
 
     return AnalysisResult(
