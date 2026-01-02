@@ -16,10 +16,14 @@ from .core import (
     analyze_egf,
     get_default_teacher_noise,
     find_matching_edf,
+    load_edf_submissions_detail,
+    load_egf_grades_detail,
+    build_grades_table_data,
 )
 from .edf_cache import EDFCache
 from .bootstrap import get_default_stability_vector, bootstrap_qwk_paired
 from .html_output import generate_html, FullAnalysisResult
+from .main import generate_summary_markdown
 
 
 class EGFWatcher(FileSystemEventHandler):
@@ -37,9 +41,9 @@ class EGFWatcher(FileSystemEventHandler):
         self.noise_assumption = noise_assumption
         self.output_callback = output_callback
 
-        edf_path = find_matching_edf(base_egf, edf_cache)
-        if edf_path:
-            edf_data = load_edf_teacher_noise(edf_path)
+        self.edf_path = find_matching_edf(base_egf, edf_cache)
+        if self.edf_path:
+            edf_data = load_edf_teacher_noise(self.edf_path)
             self.teacher_noise = edf_data.teacher_noise.get(
                 noise_assumption,
                 get_default_teacher_noise()[noise_assumption]
@@ -135,6 +139,28 @@ class EGFWatcher(FileSystemEventHandler):
             labels=['Base', 'New'],
             legend={'Base': self.base_egf.name, 'New': new_egf.name},
         )
+
+        # Build grades table data
+        if self.edf_path:
+            try:
+                edf_submissions = load_edf_submissions_detail(self.edf_path, self.noise_assumption)
+                egf_grades_list = [
+                    (self.base_egf.name, load_egf_grades_detail(self.base_egf.path)),
+                    (new_egf.name, load_egf_grades_detail(new_egf.path)),
+                ]
+                max_grade = self.base_egf.max_grade
+                full_result.grades_table = build_grades_table_data(
+                    edf_submissions,
+                    egf_grades_list,
+                    full_result.labels,
+                    max_grade,
+                    self.noise_assumption,
+                )
+            except Exception as e:
+                print(f"Warning: Failed to build grades table: {e}", file=sys.stderr)
+
+        # Generate summary markdown
+        full_result.summary_markdown = generate_summary_markdown(full_result)
 
         html = generate_html(full_result, self.noise_assumption)
         output_path = new_egf.path.parent / f"{new_egf.name}_vs_base.html"
