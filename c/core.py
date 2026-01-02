@@ -79,12 +79,44 @@ class ComparisonResult:
 
 
 @dataclass
+class SubmissionDetail:
+    """Complete submission data from EDF for modal display."""
+    submission_id: str
+    student_name: Optional[str]
+    student_id: Optional[str]
+    essay_markdown: Optional[str]
+    ground_truth_grade: Optional[int]
+    gt_distribution: Optional[list[float]]
+
+
+@dataclass
+class GradeDetail:
+    """Complete grade data from EGF for modal display."""
+    submission_id: str
+    grade: int
+    grade_distribution: Optional[list[float]]
+    justification: Optional[str]
+
+
+@dataclass
+class GradesTableData:
+    """Data structure for the interactive grades table."""
+    submissions: dict[str, SubmissionDetail]
+    egf_grades: dict[str, dict[str, GradeDetail]]
+    egf_names: list[str]
+    egf_labels: dict[str, str]
+    max_grade: int
+    noise_assumption: str
+
+
+@dataclass
 class FullAnalysisResult:
     """Complete analysis result for one or more EGF files."""
     individual_results: list[AnalysisResult]
     comparison: Optional[ComparisonResult] = None
     labels: list[str] = field(default_factory=list)
     legend: dict[str, str] = field(default_factory=dict)
+    grades_table: Optional[GradesTableData] = None
 
 
 def load_egf_data(egf_path: Path) -> EGFData:
@@ -346,3 +378,83 @@ def find_matching_edf(
 ) -> Optional[Path]:
     """Find the EDF file matching an EGF's source hash."""
     return edf_cache.find_by_hash(egf_data.source_hash)
+
+
+def load_edf_submissions_detail(edf_path: Path, noise_assumption: str = "expected") -> dict[str, SubmissionDetail]:
+    """Load detailed submission information from an EDF file for modal display."""
+    try:
+        with EDF.open(edf_path) as edf:
+            submissions = {}
+            for sub in edf.submissions:
+                gt_distribution = None
+                if sub.distributions:
+                    dist_map = {
+                        'optimistic': sub.distributions.optimistic,
+                        'expected': sub.distributions.expected,
+                        'pessimistic': sub.distributions.pessimistic,
+                    }
+                    gt_distribution = dist_map.get(noise_assumption)
+
+                essay_markdown = None
+                try:
+                    essay_markdown = sub.get_markdown()
+                except Exception:
+                    pass
+
+                submissions[sub.id] = SubmissionDetail(
+                    submission_id=sub.id,
+                    student_name=sub.student_name if hasattr(sub, 'student_name') else None,
+                    student_id=sub.student_id if hasattr(sub, 'student_id') else None,
+                    essay_markdown=essay_markdown,
+                    ground_truth_grade=sub.grade,
+                    gt_distribution=gt_distribution,
+                )
+            return submissions
+    except Exception as e:
+        raise ValueError(f"Failed to load EDF submissions from {edf_path}: {e}")
+
+
+def load_egf_grades_detail(egf_path: Path) -> dict[str, GradeDetail]:
+    """Load detailed grade information from an EGF file for modal display."""
+    try:
+        with EGF.open(egf_path) as egf:
+            grades = {}
+            for grade in egf.grades:
+                if grade.grade is not None:
+                    grades[grade.submission_id] = GradeDetail(
+                        submission_id=grade.submission_id,
+                        grade=grade.grade,
+                        grade_distribution=grade.grade_distribution if hasattr(grade, 'grade_distribution') else None,
+                        justification=grade.justification if hasattr(grade, 'justification') else None,
+                    )
+            return grades
+    except Exception as e:
+        raise ValueError(f"Failed to load EGF grades from {egf_path}: {e}")
+
+
+def build_grades_table_data(
+    edf_submissions: dict[str, SubmissionDetail],
+    egf_grades_list: list[tuple[str, dict[str, GradeDetail]]],
+    labels: list[str],
+    max_grade: int,
+    noise_assumption: str,
+) -> GradesTableData:
+    """Build combined grades table data from EDF submissions and EGF grades."""
+    egf_grades = {}
+    egf_names = []
+    egf_labels = {}
+
+    for idx, (egf_name, grades) in enumerate(egf_grades_list):
+        egf_names.append(egf_name)
+        egf_grades[egf_name] = grades
+        label = labels[idx] if idx < len(labels) else chr(ord('A') + idx)
+        egf_labels[egf_name] = label
+
+    return GradesTableData(
+        submissions=edf_submissions,
+        egf_grades=egf_grades,
+        egf_names=egf_names,
+        egf_labels=egf_labels,
+        max_grade=max_grade,
+        noise_assumption=noise_assumption,
+    )

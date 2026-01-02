@@ -25,6 +25,9 @@ from .core import (
     get_default_teacher_noise,
     find_matching_edf,
     all_same_source,
+    load_edf_submissions_detail,
+    load_egf_grades_detail,
+    build_grades_table_data,
 )
 from .edf_cache import EDFCache
 from .bootstrap import get_default_stability_vector
@@ -228,6 +231,29 @@ def run_analysis(
             print(f"  All files reference same source EDF - computing comparison matrix")
         else:
             print(f"  Warning: Files reference different EDFs - skipping comparison matrix")
+
+    # Build grades table data for the interactive HTML table
+    if edf_path:
+        try:
+            print(f"\nLoading submission details for grades table...")
+            edf_submissions = load_edf_submissions_detail(edf_path, noise_assumption)
+
+            egf_grades_list = []
+            for egf_data in egf_data_list:
+                egf_grades = load_egf_grades_detail(egf_data.path)
+                egf_grades_list.append((egf_data.name, egf_grades))
+
+            max_grade = egf_data_list[0].max_grade if egf_data_list else 40
+            result.grades_table = build_grades_table_data(
+                edf_submissions,
+                egf_grades_list,
+                result.labels,
+                max_grade,
+                noise_assumption,
+            )
+            print(f"  Loaded {len(edf_submissions)} submissions")
+        except Exception as e:
+            print(f"  Warning: Failed to build grades table: {e}", file=sys.stderr)
 
     if output_path is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
