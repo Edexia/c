@@ -1,5 +1,6 @@
 """Core analysis functions for EGF grading results."""
 
+import base64
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -97,6 +98,8 @@ class SubmissionDetail:
     essay_markdown: Optional[str]
     ground_truth_grade: Optional[int]
     gt_distribution: Optional[list[float]]
+    pdf_base64: Optional[str] = None  # Base64-encoded PDF data
+    gt_justification: Optional[str] = None
 
 
 @dataclass
@@ -424,6 +427,19 @@ def load_edf_submissions_detail(edf_path: Path, noise_assumption: str = "expecte
                 except Exception:
                     pass
 
+                # Load PDF and base64 encode it
+                pdf_base64 = None
+                try:
+                    pdf_bytes = sub.get_pdf()
+                    if pdf_bytes:
+                        pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
+                except Exception:
+                    pass
+
+                gt_justification = None
+                if hasattr(sub, 'justification') and sub.justification:
+                    gt_justification = sub.justification
+
                 submissions[sub.id] = SubmissionDetail(
                     submission_id=sub.id,
                     student_name=sub.student_name if hasattr(sub, 'student_name') else None,
@@ -431,6 +447,8 @@ def load_edf_submissions_detail(edf_path: Path, noise_assumption: str = "expecte
                     essay_markdown=essay_markdown,
                     ground_truth_grade=sub.grade,
                     gt_distribution=gt_distribution,
+                    pdf_base64=pdf_base64,
+                    gt_justification=gt_justification,
                 )
             return submissions
     except Exception as e:
@@ -469,18 +487,37 @@ def load_egf_grades_detail(egf_path: Path) -> dict[str, GradeDetail]:
             calls_by_submission: dict[str, list[LLMCallDetail]] = {}
             for call in egf.llm_calls:
                 # Extract submission ID and pass number from call_id
-                # Format: custom_t{submission_id}_p{pass_number}
-                parts = call.call_id.rsplit('_p', 1)
-                if len(parts) == 2:
-                    # Remove 'custom_t' prefix if present
-                    submission_key = parts[0]
-                    if submission_key.startswith('custom_t'):
-                        submission_key = submission_key[8:]  # len('custom_t') = 8
-                    try:
-                        pass_num = int(parts[1])
-                    except ValueError:
-                        pass_num = 0
+                # Format can be:
+                #   - custom_p{pass_number}_t{submission_id}  (new format)
+                #   - custom_t{submission_id}_p{pass_number}  (old format)
+                call_id = call.call_id
+                submission_key = None
+                pass_num = 0
 
+                if call_id.startswith('custom_p') and '_t' in call_id:
+                    # New format: custom_p{pass}_t{submission_id}
+                    # e.g., custom_p0_tJoshua_Munivrana_24146573
+                    after_custom = call_id[7:]  # Remove 'custom_'
+                    parts = after_custom.split('_t', 1)
+                    if len(parts) == 2:
+                        try:
+                            pass_num = int(parts[0][1:])  # Remove 'p' prefix
+                        except ValueError:
+                            pass_num = 0
+                        submission_key = parts[1]
+                elif '_p' in call_id:
+                    # Old format: custom_t{submission_id}_p{pass_number}
+                    parts = call_id.rsplit('_p', 1)
+                    if len(parts) == 2:
+                        submission_key = parts[0]
+                        if submission_key.startswith('custom_t'):
+                            submission_key = submission_key[8:]  # len('custom_t') = 8
+                        try:
+                            pass_num = int(parts[1])
+                        except ValueError:
+                            pass_num = 0
+
+                if submission_key:
                     if submission_key not in calls_by_submission:
                         calls_by_submission[submission_key] = []
 

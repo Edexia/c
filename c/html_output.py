@@ -10,10 +10,42 @@ from typing import Optional
 import json
 from .core import FullAnalysisResult, AnalysisResult, ComparisonResult, QWKResult, GradesTableData
 
+# Load icon as base64 at module level
+_ICON_BASE64: Optional[str] = None
+
+
+def _get_icon_base64() -> str:
+    """Load and cache the icon as base64."""
+    global _ICON_BASE64
+    if _ICON_BASE64 is None:
+        icon_path = Path(__file__).parent / "assets" / "icon.png"
+        if icon_path.exists():
+            with open(icon_path, "rb") as f:
+                _ICON_BASE64 = base64.b64encode(f.read()).decode("utf-8")
+        else:
+            _ICON_BASE64 = ""
+    return _ICON_BASE64
+
 
 def generate_html(result: FullAnalysisResult, noise_assumption: str = "expected") -> str:
     """Generate a self-contained HTML report from analysis results."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Build dynamic title from EGF names
+    if len(result.individual_results) == 1:
+        page_title = result.individual_results[0].egf_name
+    elif len(result.individual_results) > 1:
+        names = [r.egf_name for r in result.individual_results]
+        if len(names) <= 3:
+            page_title = " vs ".join(names)
+        else:
+            page_title = f"{names[0]} + {len(names) - 1} others"
+    else:
+        page_title = "EGF Analysis"
+
+    # Build favicon data URI
+    icon_b64 = _get_icon_base64()
+    favicon_link = f'<link rel="icon" type="image/png" href="data:image/png;base64,{icon_b64}">' if icon_b64 else ""
 
     # Build summary comment for IDE viewing
     summary_comment = ""
@@ -61,7 +93,8 @@ def generate_html(result: FullAnalysisResult, noise_assumption: str = "expected"
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>EGF Analysis Report</title>
+    <title>{page_title}</title>
+    {favicon_link}
     <style>
         :root {{
             --primary: #3b82f6;
@@ -860,6 +893,109 @@ def generate_grades_table_css() -> str:
             font-style: italic;
             font-size: 0.875rem;
         }
+
+        /* Collapsible sections */
+        .collapsible-section {
+            margin-top: 1rem;
+            border: 1px solid var(--gray-200);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .collapsible-header {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.75rem 1rem;
+            background: var(--gray-50);
+            cursor: pointer;
+            user-select: none;
+            font-size: 0.875rem;
+            font-weight: 500;
+            color: var(--gray-700);
+            transition: background 0.15s;
+        }
+        .collapsible-header:hover {
+            background: var(--gray-100);
+        }
+        .collapsible-header .chevron {
+            transition: transform 0.2s;
+            font-size: 0.75rem;
+            color: var(--gray-500);
+        }
+        .collapsible-section.open .collapsible-header .chevron {
+            transform: rotate(90deg);
+        }
+        .collapsible-content {
+            display: none;
+            padding: 1rem;
+            border-top: 1px solid var(--gray-200);
+        }
+        .collapsible-section.open .collapsible-content {
+            display: block;
+        }
+
+        /* LLM Input section */
+        .llm-input-section {
+            margin-top: 0.75rem;
+        }
+        .llm-input-section h5 {
+            font-size: 0.8rem;
+            color: var(--gray-600);
+            margin-bottom: 0.5rem;
+            font-weight: 500;
+        }
+        .llm-input-content {
+            background: var(--gray-50);
+            border-radius: 8px;
+            padding: 1rem;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        /* PDF Viewer */
+        .pdf-container {
+            height: 70vh;
+            min-height: 500px;
+            display: flex;
+            flex-direction: column;
+        }
+        .pdf-viewer {
+            width: 100%;
+            height: 100%;
+            border: 1px solid var(--gray-200);
+            border-radius: 8px;
+            background: var(--gray-100);
+        }
+        .pdf-fallback {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            gap: 1rem;
+            color: var(--gray-600);
+        }
+        .pdf-download-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.75rem 1.5rem;
+            background: var(--primary);
+            color: white;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: 500;
+            transition: background 0.15s;
+        }
+        .pdf-download-btn:hover {
+            background: #2563eb;
+        }
+        .pdf-not-available {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 200px;
+        }
     '''
 
 
@@ -875,6 +1011,8 @@ def generate_grades_table_js(grades_table: GradesTableData) -> str:
             'essay_markdown': sub.essay_markdown,
             'ground_truth_grade': sub.ground_truth_grade,
             'gt_distribution': sub.gt_distribution,
+            'gt_justification': sub.gt_justification,
+            'pdf_base64': sub.pdf_base64,
         }
 
     egf_grades_data = {}
@@ -977,6 +1115,64 @@ def generate_grades_table_js(grades_table: GradesTableData) -> str:
             .replace(/: (null)/g, ': <span class="json-null">$1</span>');
     }}
 
+    // Toggle collapsible section
+    function toggleCollapsible(el) {{
+        el.classList.toggle('open');
+    }}
+    window.toggleCollapsible = toggleCollapsible;
+
+    // Extract LLM input from raw_json
+    function extractLLMInput(rawJson) {{
+        if (!rawJson) return null;
+
+        // Try common structures for LLM input
+        // 1. Check for 'input' field
+        if (rawJson.input) {{
+            if (typeof rawJson.input === 'string') return rawJson.input;
+            if (rawJson.input.messages) return formatMessages(rawJson.input.messages);
+            if (rawJson.input.prompt) return rawJson.input.prompt;
+        }}
+
+        // 2. Check for 'messages' directly
+        if (rawJson.messages) {{
+            return formatMessages(rawJson.messages);
+        }}
+
+        // 3. Check for 'prompt' directly
+        if (rawJson.prompt) {{
+            return rawJson.prompt;
+        }}
+
+        // 4. Check for request body
+        if (rawJson.request && rawJson.request.messages) {{
+            return formatMessages(rawJson.request.messages);
+        }}
+
+        return null;
+    }}
+
+    // Format messages array into readable markdown
+    function formatMessages(messages) {{
+        if (!Array.isArray(messages)) return null;
+
+        return messages.map(msg => {{
+            const role = msg.role || 'unknown';
+            let content = '';
+
+            if (typeof msg.content === 'string') {{
+                content = msg.content;
+            }} else if (Array.isArray(msg.content)) {{
+                // Handle content array (e.g., with text and images)
+                content = msg.content
+                    .filter(part => part.type === 'text')
+                    .map(part => part.text)
+                    .join('\\n');
+            }}
+
+            return `**${{role.charAt(0).toUpperCase() + role.slice(1)}}:**\\n\\n${{content}}`;
+        }}).join('\\n\\n---\\n\\n');
+    }}
+
     // Current state for subtabs
     let currentSubtabState = {{}};
 
@@ -1004,10 +1200,27 @@ def generate_grades_table_js(grades_table: GradesTableData) -> str:
             callIdEl.textContent = call.call_id;
         }}
 
+        // Update LLM input display
+        const llmInputEl = tabContent.querySelector('.llm-input-content');
+        if (llmInputEl) {{
+            const llmInput = extractLLMInput(call.raw_json);
+            if (llmInput) {{
+                llmInputEl.innerHTML = parseMarkdown(llmInput);
+            }} else {{
+                llmInputEl.innerHTML = '<em class="text-gray">No input data found</em>';
+            }}
+        }}
+
         // Update JSON display
         const jsonEl = tabContent.querySelector('.json-display');
         if (jsonEl) {{
             jsonEl.innerHTML = formatJsonWithHighlighting(call.raw_json);
+        }}
+
+        // Collapse raw JSON section by default when switching
+        const collapsibleSection = tabContent.querySelector('.collapsible-section');
+        if (collapsibleSection) {{
+            collapsibleSection.classList.remove('open');
         }}
 
         // Store current state
@@ -1054,6 +1267,32 @@ def generate_grades_table_js(grades_table: GradesTableData) -> str:
         const title = submission.student_name || submission.student_id || submissionId;
         document.getElementById('modalTitle').textContent = title;
 
+        // Populate PDF tab
+        const pdfViewer = document.getElementById('pdfViewer');
+        const pdfFallback = document.getElementById('pdfFallback');
+        const pdfNotAvailable = document.getElementById('pdfNotAvailable');
+        const pdfDownloadLink = document.getElementById('pdfDownloadLink');
+
+        if (submission.pdf_base64) {{
+            const pdfDataUrl = 'data:application/pdf;base64,' + submission.pdf_base64;
+            pdfViewer.src = pdfDataUrl;
+            pdfViewer.style.display = 'block';
+            pdfFallback.style.display = 'none';
+            pdfNotAvailable.style.display = 'none';
+            pdfDownloadLink.href = pdfDataUrl;
+
+            // Handle PDF loading error (some browsers don't support inline PDFs)
+            pdfViewer.onerror = function() {{
+                pdfViewer.style.display = 'none';
+                pdfFallback.style.display = 'flex';
+            }};
+        }} else {{
+            pdfViewer.src = '';
+            pdfViewer.style.display = 'none';
+            pdfFallback.style.display = 'none';
+            pdfNotAvailable.style.display = 'flex';
+        }}
+
         // Populate Essay tab
         document.getElementById('essayContent').innerHTML = parseMarkdown(submission.essay_markdown);
 
@@ -1068,6 +1307,14 @@ def generate_grades_table_js(grades_table: GradesTableData) -> str:
             gtHistContainer.innerHTML = generateHistogramSVG(submission.gt_distribution, gradesData.maxGrade, 400, 120);
         }} else {{
             gtHistContainer.innerHTML = '<em class="text-gray">No distribution data available</em>';
+        }}
+
+        // Populate GT justification
+        const gtJustificationEl = document.getElementById('gtJustification');
+        if (gtJustificationEl) {{
+            gtJustificationEl.innerHTML = submission.gt_justification
+                ? parseMarkdown(submission.gt_justification)
+                : '<em class="text-gray">No justification provided</em>';
         }}
 
         // Populate EGF tabs
@@ -1246,6 +1493,7 @@ def generate_modal_html(grades_table: GradesTableData) -> str:
     # Build tab buttons
     tab_buttons = [
         '<button class="tab-btn active" data-tab="essay">Essay</button>',
+        '<button class="tab-btn" data-tab="pdf">PDF</button>',
         '<button class="tab-btn" data-tab="gt">Ground Truth</button>',
     ]
     for idx, egf_name in enumerate(grades_table.egf_names):
@@ -1274,7 +1522,19 @@ def generate_modal_html(grades_table: GradesTableData) -> str:
                     <h4>LLM Calls</h4>
                     <div class="subtabs"></div>
                     <div class="call-id-display"></div>
-                    <pre class="json-display"></pre>
+                    <div class="llm-input-section">
+                        <h5>LLM Input</h5>
+                        <div class="llm-input-content markdown-content"></div>
+                    </div>
+                    <div class="collapsible-section">
+                        <div class="collapsible-header" onclick="toggleCollapsible(this.parentElement)">
+                            <span class="chevron">▶</span>
+                            <span>Raw JSON</span>
+                        </div>
+                        <div class="collapsible-content">
+                            <pre class="json-display"></pre>
+                        </div>
+                    </div>
                 </div>
             </div>
         ''')
@@ -1293,6 +1553,18 @@ def generate_modal_html(grades_table: GradesTableData) -> str:
                 <div class="tab-content active" id="tab-essay">
                     <div class="markdown-content" id="essayContent"></div>
                 </div>
+                <div class="tab-content" id="tab-pdf">
+                    <div class="pdf-container" id="pdfContainer">
+                        <iframe id="pdfViewer" class="pdf-viewer"></iframe>
+                        <div id="pdfFallback" class="pdf-fallback" style="display: none;">
+                            <p>PDF preview not available.</p>
+                            <a id="pdfDownloadLink" href="#" download="submission.pdf" class="pdf-download-btn">Download PDF</a>
+                        </div>
+                        <div id="pdfNotAvailable" class="pdf-not-available" style="display: none;">
+                            <em class="text-gray">No PDF available for this submission</em>
+                        </div>
+                    </div>
+                </div>
                 <div class="tab-content" id="tab-gt">
                     <div class="grade-display">
                         <span class="grade-value" id="gtGradeValue">-</span>
@@ -1301,6 +1573,10 @@ def generate_modal_html(grades_table: GradesTableData) -> str:
                     <div class="histogram-section">
                         <h4>Teacher Noise Distribution (<span id="gtNoiseLabel">expected</span>)</h4>
                         <div class="histogram-container" id="gtHistogram"></div>
+                    </div>
+                    <div class="justification-section">
+                        <h4>Justification</h4>
+                        <div class="markdown-content" id="gtJustification"></div>
                     </div>
                 </div>
                 {"".join(egf_tab_contents)}
