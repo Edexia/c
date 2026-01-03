@@ -770,6 +770,96 @@ def generate_grades_table_css() -> str:
         .table-container .grades-table th {
             background: var(--gray-50);
         }
+
+        /* LLM Calls Section */
+        .llm-calls-section {
+            margin-top: 1.5rem;
+            padding-top: 1.5rem;
+            border-top: 1px solid var(--gray-200);
+        }
+        .llm-calls-section h4 {
+            font-size: 0.875rem;
+            color: var(--gray-600);
+            margin-bottom: 0.75rem;
+        }
+
+        /* Subtabs for LLM calls */
+        .subtabs {
+            display: flex;
+            gap: 0.25rem;
+            margin-bottom: 1rem;
+            flex-wrap: wrap;
+        }
+        .subtab-btn {
+            padding: 0.4rem 0.75rem;
+            border: 1px solid var(--gray-300);
+            background: white;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            color: var(--gray-600);
+            transition: all 0.15s;
+        }
+        .subtab-btn:hover {
+            background: var(--gray-50);
+            border-color: var(--gray-400);
+        }
+        .subtab-btn.active {
+            background: var(--primary);
+            color: white;
+            border-color: var(--primary);
+        }
+
+        /* Call ID display */
+        .call-id-display {
+            font-size: 0.75rem;
+            color: var(--gray-500);
+            margin-bottom: 0.5rem;
+            font-family: ui-monospace, monospace;
+        }
+
+        /* JSON display */
+        .json-display {
+            background: var(--gray-900);
+            color: #e5e7eb;
+            padding: 1rem;
+            border-radius: 8px;
+            font-family: ui-monospace, monospace;
+            font-size: 0.75rem;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 400px;
+            overflow-y: auto;
+            line-height: 1.5;
+        }
+        .json-display .json-key {
+            color: #93c5fd;
+        }
+        .json-display .json-string {
+            color: #86efac;
+        }
+        .json-display .json-number {
+            color: #fcd34d;
+        }
+        .json-display .json-boolean {
+            color: #f472b6;
+        }
+        .json-display .json-null {
+            color: #9ca3af;
+        }
+
+        .subtab-content {
+            display: none;
+        }
+        .subtab-content.active {
+            display: block;
+        }
+        .no-calls-message {
+            color: var(--gray-500);
+            font-style: italic;
+            font-size: 0.875rem;
+        }
     '''
 
 
@@ -791,11 +881,20 @@ def generate_grades_table_js(grades_table: GradesTableData) -> str:
     for egf_name, grades in grades_table.egf_grades.items():
         egf_grades_data[egf_name] = {}
         for sid, grade in grades.items():
+            llm_calls_data = [
+                {
+                    'call_id': call.call_id,
+                    'pass_number': call.pass_number,
+                    'raw_json': call.raw_json,
+                }
+                for call in grade.llm_calls
+            ]
             egf_grades_data[egf_name][sid] = {
                 'submission_id': grade.submission_id,
                 'grade': grade.grade,
                 'grade_distribution': grade.grade_distribution,
                 'justification': grade.justification,
+                'llm_calls': llm_calls_data,
             }
 
     data = {
@@ -864,6 +963,57 @@ def generate_grades_table_js(grades_table: GradesTableData) -> str:
         return html;
     }}
 
+    // Format JSON with syntax highlighting
+    function formatJsonWithHighlighting(obj) {{
+        const jsonStr = JSON.stringify(obj, null, 2);
+        return jsonStr
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"([^"]+)":/g, '<span class="json-key">"$1"</span>:')
+            .replace(/: "([^"]*)"/g, ': <span class="json-string">"$1"</span>')
+            .replace(/: (\\d+\\.?\\d*)/g, ': <span class="json-number">$1</span>')
+            .replace(/: (true|false)/g, ': <span class="json-boolean">$1</span>')
+            .replace(/: (null)/g, ': <span class="json-null">$1</span>');
+    }}
+
+    // Current state for subtabs
+    let currentSubtabState = {{}};
+
+    // Switch subtab within an EGF tab
+    function switchSubTab(egfIdx, passNum, submissionId) {{
+        const tabContent = document.getElementById('tab-egf-' + egfIdx);
+        if (!tabContent) return;
+
+        // Update button states
+        tabContent.querySelectorAll('.subtab-btn').forEach(btn => {{
+            btn.classList.toggle('active', parseInt(btn.dataset.pass) === passNum);
+        }});
+
+        // Get LLM calls for this submission
+        const egfName = gradesData.egfNames[egfIdx];
+        const gradeDetail = gradesData.egfGrades[egfName]?.[submissionId];
+        if (!gradeDetail || !gradeDetail.llm_calls) return;
+
+        const call = gradeDetail.llm_calls.find(c => c.pass_number === passNum);
+        if (!call) return;
+
+        // Update call ID display
+        const callIdEl = tabContent.querySelector('.call-id-display');
+        if (callIdEl) {{
+            callIdEl.textContent = call.call_id;
+        }}
+
+        // Update JSON display
+        const jsonEl = tabContent.querySelector('.json-display');
+        if (jsonEl) {{
+            jsonEl.innerHTML = formatJsonWithHighlighting(call.raw_json);
+        }}
+
+        // Store current state
+        currentSubtabState[egfIdx] = {{ passNum, submissionId }};
+    }}
+
     // Generate histogram SVG
     function generateHistogramSVG(distribution, maxGrade, width, height) {{
         width = width || 300;
@@ -929,6 +1079,8 @@ def generate_grades_table_js(grades_table: GradesTableData) -> str:
             const gradeValueEl = tabContent.querySelector('.egf-grade-value');
             const histContainer = tabContent.querySelector('.egf-histogram');
             const justificationEl = tabContent.querySelector('.egf-justification');
+            const subtabsContainer = tabContent.querySelector('.subtabs');
+            const llmCallsSection = tabContent.querySelector('.llm-calls-section');
 
             if (gradeDetail) {{
                 gradeValueEl.textContent = gradeDetail.grade;
@@ -936,10 +1088,35 @@ def generate_grades_table_js(grades_table: GradesTableData) -> str:
                 justificationEl.innerHTML = gradeDetail.justification
                     ? parseMarkdown(gradeDetail.justification)
                     : '<em class="text-gray">No justification provided</em>';
+
+                // Populate LLM calls subtabs
+                if (gradeDetail.llm_calls && gradeDetail.llm_calls.length > 0 && subtabsContainer) {{
+                    subtabsContainer.innerHTML = '';
+                    gradeDetail.llm_calls.forEach((call, callIdx) => {{
+                        const btn = document.createElement('button');
+                        btn.className = 'subtab-btn' + (callIdx === 0 ? ' active' : '');
+                        btn.dataset.pass = call.pass_number;
+                        btn.textContent = (call.pass_number + 1).toString();
+                        btn.title = call.call_id;
+                        btn.onclick = () => switchSubTab(idx, call.pass_number, submissionId);
+                        subtabsContainer.appendChild(btn);
+                    }});
+
+                    // Show first call by default
+                    if (llmCallsSection) {{
+                        llmCallsSection.style.display = 'block';
+                    }}
+                    switchSubTab(idx, gradeDetail.llm_calls[0].pass_number, submissionId);
+                }} else if (llmCallsSection) {{
+                    llmCallsSection.style.display = 'none';
+                }}
             }} else {{
                 gradeValueEl.textContent = 'N/A';
                 histContainer.innerHTML = '<em class="text-gray">Not graded</em>';
                 justificationEl.innerHTML = '<em class="text-gray">No data available</em>';
+                if (llmCallsSection) {{
+                    llmCallsSection.style.display = 'none';
+                }}
             }}
         }});
 
@@ -1092,6 +1269,12 @@ def generate_modal_html(grades_table: GradesTableData) -> str:
                 <div class="justification-section">
                     <h4>Justification</h4>
                     <div class="markdown-content egf-justification"></div>
+                </div>
+                <div class="llm-calls-section">
+                    <h4>LLM Calls</h4>
+                    <div class="subtabs"></div>
+                    <div class="call-id-display"></div>
+                    <pre class="json-display"></pre>
                 </div>
             </div>
         ''')

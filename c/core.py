@@ -100,12 +100,21 @@ class SubmissionDetail:
 
 
 @dataclass
+class LLMCallDetail:
+    """LLM call data for modal display."""
+    call_id: str
+    pass_number: int
+    raw_json: dict
+
+
+@dataclass
 class GradeDetail:
     """Complete grade data from EGF for modal display."""
     submission_id: str
     grade: int
     grade_distribution: Optional[list[float]]
     justification: Optional[str]
+    llm_calls: list[LLMCallDetail] = field(default_factory=list)
 
 
 @dataclass
@@ -456,14 +465,47 @@ def load_egf_grades_detail(egf_path: Path) -> dict[str, GradeDetail]:
     """Load detailed grade information from an EGF file for modal display."""
     try:
         with EGF.open(egf_path) as egf:
+            # Group LLM calls by submission
+            calls_by_submission: dict[str, list[LLMCallDetail]] = {}
+            for call in egf.llm_calls:
+                # Extract submission ID and pass number from call_id
+                # Format: custom_t{submission_id}_p{pass_number}
+                parts = call.call_id.rsplit('_p', 1)
+                if len(parts) == 2:
+                    # Remove 'custom_t' prefix if present
+                    submission_key = parts[0]
+                    if submission_key.startswith('custom_t'):
+                        submission_key = submission_key[8:]  # len('custom_t') = 8
+                    try:
+                        pass_num = int(parts[1])
+                    except ValueError:
+                        pass_num = 0
+
+                    if submission_key not in calls_by_submission:
+                        calls_by_submission[submission_key] = []
+
+                    calls_by_submission[submission_key].append(LLMCallDetail(
+                        call_id=call.call_id,
+                        pass_number=pass_num,
+                        raw_json=call.to_dict(),
+                    ))
+
+            # Sort calls by pass number for each submission
+            for submission_key in calls_by_submission:
+                calls_by_submission[submission_key].sort(key=lambda x: x.pass_number)
+
             grades = {}
             for grade in egf.grades:
                 if grade.grade is not None:
-                    grades[grade.submission_id] = GradeDetail(
-                        submission_id=grade.submission_id,
+                    submission_id = grade.submission_id
+                    llm_calls = calls_by_submission.get(submission_id, [])
+
+                    grades[submission_id] = GradeDetail(
+                        submission_id=submission_id,
                         grade=grade.grade,
                         grade_distribution=grade.grade_distribution if hasattr(grade, 'grade_distribution') else None,
                         justification=grade.justification if hasattr(grade, 'justification') else None,
+                        llm_calls=llm_calls,
                     )
             return grades
     except Exception as e:
