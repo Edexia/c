@@ -14,9 +14,13 @@ Examples:
 import argparse
 import sys
 import webbrowser
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+from edf import EDF
+from egf import EGF
 
 from .core import (
     EGFData,
@@ -32,6 +36,8 @@ from .core import (
     load_edf_submissions_detail,
     load_egf_grades_detail,
     build_grades_table_data,
+    ProcessedInput,
+    MatchedEGF,
 )
 from .edf_cache import EDFCache
 from .bootstrap import get_default_stability_vector
@@ -139,6 +145,13 @@ Examples:
         help="Don't open HTML report in browser",
     )
 
+    parser.add_argument(
+        "--edf-path",
+        type=str,
+        default=None,
+        help="Directory to search for EDF files (default: CWD)",
+    )
+
     return parser.parse_args()
 
 
@@ -219,6 +232,147 @@ def check_missing_edfs(egf_data_list: list[EGFData], edf_cache: EDFCache) -> lis
             print(f"  Dropping from analysis")
 
     return valid
+
+
+def process_input_queue(cli_args: list[str]) -> ProcessedInput:
+    """Process CLI args using queue-based discovery.
+
+    Recursively processes folders, detects ephemeral EGFs (unzipped EGF folders),
+    and collects all .egf files.
+    """
+    queue = deque(cli_args)
+    egf_files: list[Path] = []
+    ephemeral_egfs: list[Path] = []
+    warnings: list[str] = []
+
+    while queue:
+        item = queue.popleft()
+        path = Path(item)
+
+        if not path.exists():
+            warnings.append(f"Skipping non-existent: {item}")
+            continue
+
+        if path.is_file():
+            if path.suffix == ".egf":
+                egf_files.append(path)
+            else:
+                warnings.append(f"Skipping non-EGF file: {item}")
+            continue
+
+        if path.is_dir():
+            # Try EGF.open() to detect ephemeral EGF (unzipped EGF folder)
+            try:
+                with EGF.open(path) as _egf:
+                    ephemeral_egfs.append(path)
+                    warnings.append(
+                        f"'{path}' parsed as ephemeral EGF. "
+                        f"Delete manifest.json to treat as folder."
+                    )
+                    continue
+            except Exception:
+                pass  # Not an EGF, treat as folder
+
+            # Expand folder contents into queue
+            for child in sorted(path.iterdir()):
+                if child.is_dir() or child.suffix == ".egf":
+                    queue.append(str(child))
+
+    return ProcessedInput(
+        egf_paths=list(dict.fromkeys(egf_files)),  # Remove duplicates, preserve order
+        ephemeral_egf_paths=list(dict.fromkeys(ephemeral_egfs)),
+        warnings=warnings,
+    )
+
+
+def scan_edf_files_direct(search_root: Path) -> dict[str, Path]:
+    """Recursively scan for EDF files, returning hash->path index.
+
+    Does NOT use cache - computes hash for each EDF directly.
+    Also detects unpacked EDF directories (with manifest.json + submissions/).
+    """
+    hash_to_path: dict[str, Path] = {}
+
+    # Find all .edf files
+    for edf_path in search_root.rglob("*.edf"):
+        try:
+            with EDF.open(edf_path) as edf:
+                if edf.content_hash:
+                    hash_to_path[edf.content_hash] = edf_path
+        except Exception:
+            continue
+
+    # Also check unpacked EDF directories (manifest.json + submissions/)
+    for manifest in search_root.rglob("manifest.json"):
+        parent = manifest.parent
+        if (parent / "submissions").is_dir():
+            try:
+                with EDF.open(parent) as edf:
+                    if edf.content_hash:
+                        hash_to_path[edf.content_hash] = parent
+            except Exception:
+                continue
+
+    return hash_to_path
+
+
+def match_egfs_to_edfs(
+    egf_paths: list[Path],
+    edf_index: dict[str, Path],
+) -> tuple[list[MatchedEGF], list[str]]:
+    """Load EGFs and match each to its EDF by source hash.
+
+    Returns:
+        Tuple of (matched EGFs, error messages for unmatched ones)
+    """
+    matched: list[MatchedEGF] = []
+    errors: list[str] = []
+
+    for egf_path in egf_paths:
+        try:
+            egf_data = load_egf_data(egf_path)
+        except Exception as e:
+            errors.append(f"Failed to load {egf_path.name}: {e}")
+            continue
+
+        edf_path = edf_index.get(egf_data.source_hash)
+        if edf_path is None:
+            errors.append(
+                f"No matching EDF for {egf_data.name} "
+                f"(hash: {egf_data.source_hash[:16]}...)"
+            )
+            continue
+
+        matched.append(MatchedEGF(egf_data=egf_data, edf_path=edf_path))
+
+    return matched, errors
+
+
+def run_stats_mode(
+    matched_egfs: list[MatchedEGF],
+    noise_assumption: str,
+    output_path: Optional[Path],
+    seed: int,
+    quiet: bool,
+) -> list[Path]:
+    """Generate separate HTML report for each EGF (stats only mode)."""
+    output_paths: list[Path] = []
+
+    for i, matched in enumerate(matched_egfs, 1):
+        print(f"\n[{i}/{len(matched_egfs)}] Analyzing {matched.egf_data.name}...")
+        print(f"  EDF: {matched.edf_path.name}")
+
+        # Run single-file analysis
+        run_analysis(
+            [matched.egf_data.path],
+            matched.edf_path.parent,
+            noise_assumption,
+            output_path,  # Will auto-generate filename if None
+            seed,
+            quiet,
+        )
+
+    return output_paths
 
 
 def run_analysis(
@@ -361,16 +515,58 @@ def main() -> None:
         run_watch_mode(base_path, edf_folder, args.noise, args.quiet)
 
     else:
-        egf_files, edf_folder = find_egf_files_in_args(args.paths)
+        # Step 1: Process input queue
+        print("Processing input arguments...")
+        processed = process_input_queue(args.paths)
 
-        if not egf_files:
+        for warning in processed.warnings:
+            print(f"  Warning: {warning}", file=sys.stderr)
+
+        all_egf_paths = processed.egf_paths + processed.ephemeral_egf_paths
+
+        if not all_egf_paths:
             print("Error: No EGF files found", file=sys.stderr)
-            print("Usage: c <egf_files...> <edf_folder>", file=sys.stderr)
+            print("Usage: c <egf_files...> [--edf-path <folder>]", file=sys.stderr)
             sys.exit(1)
 
+        print(f"  Found {len(all_egf_paths)} EGF file(s)")
+
+        # Step 2: Scan for EDFs (no cache)
+        edf_search_root = Path(args.edf_path) if args.edf_path else Path.cwd()
+        print(f"\nScanning for EDF files in: {edf_search_root}")
+        edf_index = scan_edf_files_direct(edf_search_root)
+        print(f"  Found {len(edf_index)} EDF file(s)")
+
+        # Step 3: Match EGFs to EDFs
+        print("\nMatching EGF files to EDFs...")
+        matched_egfs, match_errors = match_egfs_to_edfs(all_egf_paths, edf_index)
+
+        for error in match_errors:
+            print(f"  Error: {error}", file=sys.stderr)
+
+        if not matched_egfs:
+            print("Error: No EGF files with matching EDFs", file=sys.stderr)
+            sys.exit(1)
+
+        print(f"  Matched {len(matched_egfs)} EGF file(s)")
+
+        # Step 4: Determine mode and run analysis
+        unique_edfs = set(m.edf_path for m in matched_egfs)
         output_path = Path(args.output) if args.output else None
 
-        run_analysis(egf_files, edf_folder, args.noise, output_path, args.seed, args.quiet)
+        if len(matched_egfs) > 1 and len(unique_edfs) == 1:
+            # Stats + NxN comparison mode
+            print(f"\nMode: Stats + NxN Comparison (all EGFs share 1 EDF)")
+            egf_files = [m.egf_data.path for m in matched_egfs]
+            edf_folder = matched_egfs[0].edf_path.parent
+            run_analysis(egf_files, edf_folder, args.noise, output_path, args.seed, args.quiet)
+        else:
+            # Stats only mode
+            if len(unique_edfs) > 1:
+                print(f"\nWarning: {len(unique_edfs)} different EDFs detected", file=sys.stderr)
+                print("  NxN comparison requires same dataset. Generating separate reports.", file=sys.stderr)
+            print(f"\nMode: Stats Only (generating {len(matched_egfs)} report(s))")
+            run_stats_mode(matched_egfs, args.noise, output_path, args.seed, args.quiet)
 
 
 if __name__ == "__main__":

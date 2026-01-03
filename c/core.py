@@ -142,6 +142,21 @@ class FullAnalysisResult:
     summary_markdown: Optional[str] = None
 
 
+@dataclass
+class ProcessedInput:
+    """Result of processing input queue."""
+    egf_paths: list[Path]
+    ephemeral_egf_paths: list[Path]
+    warnings: list[str]
+
+
+@dataclass
+class MatchedEGF:
+    """An EGF with its matched EDF."""
+    egf_data: EGFData
+    edf_path: Path
+
+
 def load_egf_data(egf_path: Path) -> EGFData:
     """Load an EGF file and extract analysis-ready data."""
     name = egf_path.stem if egf_path.is_file() else egf_path.name
