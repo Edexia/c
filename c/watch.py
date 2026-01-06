@@ -1,8 +1,8 @@
 """Watch mode for continuous EGF analysis."""
 
+import subprocess
 import sys
 import time
-import webbrowser
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -213,7 +213,7 @@ def run_watch_mode(
 
         # Open in browser
         if not quiet:
-            webbrowser.open(Path(output_path).resolve().as_uri())
+            subprocess.run(['open', str(Path(output_path).resolve())])
 
     handler = EGFWatcher(base_egf, edf_path, ground_truth, noise_assumption, output_callback)
     observer = Observer()

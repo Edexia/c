@@ -12,8 +12,8 @@ Examples:
 """
 
 import argparse
+import subprocess
 import sys
-import webbrowser
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -589,7 +589,7 @@ def run_analysis(
 
     # Open in browser
     if not quiet:
-        webbrowser.open(output_path.resolve().as_uri())
+        subprocess.run(['open', str(output_path.resolve())])
 
     # Print summary to terminal
     print("\n" + result.summary_markdown)

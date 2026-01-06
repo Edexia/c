@@ -4,8 +4,61 @@
 def generate_preact_app() -> str:
     """Generate the complete Preact application code."""
     return '''
-// Load app data
-const appData = JSON.parse(document.getElementById('appData').textContent);
+// Progressive chunk loading: appData is populated by decompression code in html_template
+// Chunks load in order: core -> submissions -> grades -> comparisons -> llmCalls -> pdfs
+
+// Reference to window.appData (populated by chunk loader)
+let appData = window.appData;
+
+// Update loading progress UI
+function updateLoadingUI(loaded, total, chunkName) {
+    const statusEl = document.getElementById('loading-status');
+    const barEl = document.getElementById('loading-bar');
+    if (statusEl) {
+        const chunkNames = {
+            'core': 'metadata',
+            'submissions': 'submissions',
+            'grades': 'grades',
+            'comparisons': 'comparisons',
+            'llmCalls': 'LLM calls',
+            'pdfs': 'PDFs'
+        };
+        statusEl.textContent = `Loading ${chunkNames[chunkName] || chunkName}... (${loaded}/${total})`;
+    }
+    if (barEl) {
+        barEl.style.width = `${(loaded / total) * 100}%`;
+    }
+}
+
+// Listen for chunk progress
+window.addEventListener('appDataProgress', (e) => {
+    const { chunk, loaded, total, ready } = e.detail;
+    updateLoadingUI(loaded, total, chunk);
+
+    // Initialize app once we have core + submissions + grades
+    // This allows showing the grades table before heavy data loads
+    console.log('[AppProgress]', chunk, loaded + '/' + total,
+        'ready:', JSON.stringify(ready),
+        'initialized:', window._appInitialized,
+        'submissions:', Object.keys(appData.submissions || {}).length);
+
+    if (ready.core && ready.submissions && ready.grades && !window._appInitialized) {
+        console.log('[AppInit] Triggering initializeApp, submissions:', Object.keys(appData.submissions || {}).length);
+        window._appInitialized = true;
+        initializeApp();
+    }
+});
+
+// Handle complete event (fallback initialization if needed)
+window.addEventListener('appDataComplete', () => {
+    // Fallback: ensure app initializes if it hasn't yet
+    if (!window._appInitialized && Object.keys(appData.submissions || {}).length > 0) {
+        console.log('[AppComplete] Fallback: initializing app now');
+        window._appInitialized = true;
+        initializeApp();
+    }
+    // Note: App component listens for appDataComplete to trigger re-render via state
+});
 
 // ============ Utility Functions ============
 
@@ -329,11 +382,37 @@ function LLMCallInspection({ call }) {
     `;
 }
 
-function LLMCallsList({ calls, title = "LLM Calls" }) {
+function LLMCallsList({ calls, title = "LLM Calls", egfName = null }) {
     // Reusable component for displaying a list of LLM calls with tabs
+    // egfName is used to look up raw_json from allLLMCalls when not present in call object
     const [activeCall, setActiveCall] = useState(0);
 
-    if (!calls || calls.length === 0) {
+    // Enrich calls with raw_json from allLLMCalls if not present
+    // This de-duplicates LLM call data - raw_json is stored only in allLLMCalls
+    const enrichedCalls = useMemo(() => {
+        if (!calls || calls.length === 0) return [];
+        return calls.map(call => {
+            // If raw_json already present (e.g., from comparison modal), use it
+            if (call.raw_json) return call;
+            // Otherwise look up from allLLMCalls
+            if (egfName && appData.allLLMCalls?.[egfName]?.[call.call_id]) {
+                return {
+                    ...call,
+                    raw_json: appData.allLLMCalls[egfName][call.call_id].raw_json
+                };
+            }
+            // Fallback: search all EGFs for this call_id
+            for (const eName of (appData.egfNames || [])) {
+                const callData = appData.allLLMCalls?.[eName]?.[call.call_id];
+                if (callData?.raw_json) {
+                    return { ...call, raw_json: callData.raw_json };
+                }
+            }
+            return call;
+        });
+    }, [calls, egfName]);
+
+    if (!enrichedCalls || enrichedCalls.length === 0) {
         return html`<p class="no-calls-message">No LLM calls recorded</p>`;
     }
 
@@ -349,7 +428,7 @@ function LLMCallsList({ calls, title = "LLM Calls" }) {
         <div class="llm-calls-section">
             ${title && html`<h4>${title}</h4>`}
             <div class="subtabs">
-                ${calls.map((call, idx) => html`
+                ${enrichedCalls.map((call, idx) => html`
                     <button
                         class="subtab-btn ${idx === activeCall ? 'active' : ''}"
                         onClick=${() => setActiveCall(idx)}
@@ -358,14 +437,14 @@ function LLMCallsList({ calls, title = "LLM Calls" }) {
                     >${getTabLabel(call, idx)}</button>
                 `)}
             </div>
-            <${LLMCallInspection} call=${calls[activeCall]} />
+            <${LLMCallInspection} call=${enrichedCalls[activeCall]} />
         </div>
     `;
 }
 
 // Legacy alias for backwards compatibility
-function LLMCallsSection({ calls }) {
-    return html`<${LLMCallsList} calls=${calls} title="LLM Calls" />`;
+function LLMCallsSection({ calls, egfName = null }) {
+    return html`<${LLMCallsList} calls=${calls} title="LLM Calls" egfName=${egfName} />`;
 }
 
 // ============ Comparison Components ============
@@ -471,7 +550,7 @@ function GroundTruthTab({ submission, maxGrade, noiseAssumption }) {
     `;
 }
 
-function EGFTab({ gradeDetail, maxGrade, egfLabel }) {
+function EGFTab({ gradeDetail, maxGrade, egfLabel, egfName = null }) {
     if (!gradeDetail) {
         return html`<p class="text-gray">Not graded by ${egfLabel}</p>`;
     }
@@ -495,7 +574,7 @@ function EGFTab({ gradeDetail, maxGrade, egfLabel }) {
                     <${MarkdownContent} content=${gradeDetail.justification} />
                 </div>
             `}
-            <${LLMCallsSection} calls=${gradeDetail.llm_calls} />
+            <${LLMCallsSection} calls=${gradeDetail.llm_calls} egfName=${egfName} />
         </div>
     `;
 }
@@ -725,6 +804,7 @@ function Modal({ isOpen, onClose, submissionId, onComparisonClick, onBack, canGo
                                 gradeDetail=${appData.egfGrades[tab.egfName]?.[submissionId]}
                                 maxGrade=${appData.maxGrade}
                                 egfLabel=${tab.label}
+                                egfName=${tab.egfName}
                                 key=${tab.id}
                             />
                         `
@@ -858,6 +938,27 @@ function ComparisonsTable({ onComparisonClick }) {
         });
     }, []);
 
+    // Virtual scrolling configuration
+    const ROW_HEIGHT = 41;
+    const CONTAINER_HEIGHT = 400;
+    const BUFFER = 5;
+
+    const [scrollTop, setScrollTop] = useState(0);
+
+    // Calculate visible range
+    const totalHeight = comparisonData.length * ROW_HEIGHT;
+    const visibleStart = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - BUFFER);
+    const visibleEnd = Math.min(
+        comparisonData.length,
+        Math.ceil((scrollTop + CONTAINER_HEIGHT) / ROW_HEIGHT) + BUFFER
+    );
+    const visiblePairs = comparisonData.slice(visibleStart, visibleEnd);
+    const offsetY = visibleStart * ROW_HEIGHT;
+
+    const handleScroll = useCallback((e) => {
+        setScrollTop(e.target.scrollTop);
+    }, []);
+
     if (comparisonData.length === 0) {
         return null;  // Don't show section if no annotated comparisons
     }
@@ -876,39 +977,44 @@ function ComparisonsTable({ onComparisonClick }) {
                 <span style="color: var(--warning);">tie vs winner</span>,
                 <span style="color: var(--danger);">wrong winner</span>,
                 <span style="color: var(--gray-500);">no GT (unevaluable)</span>.
+                <span style="margin-left: 1rem; color: var(--gray-400);">(${comparisonData.length} pairs)</span>
             </p>
-            <div class="table-container">
-                <table class="grades-table">
-                    <thead>
-                        <tr>
-                            <th>Essay A</th>
-                            <th>Essay B</th>
-                            <th>GT Winner</th>
-                            <th>GT Gap</th>
-                            ${appData.egfNames.map(name => html`
-                                <th title=${name} key=${name}>${appData.egfLabels[name] || name}</th>
-                            `)}
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${comparisonData.map((pair, idx) => html`
-                            <tr class="grade-row" onClick=${() => onComparisonClick(pair)} key=${idx}>
-                                <td>${getDisplayName(pair.subA)}</td>
-                                <td>${getDisplayName(pair.subB)}</td>
-                                <td class="grade-cell">${pair.gtWinner}</td>
-                                <td class="grade-cell">${pair.gtGap}</td>
-                                ${appData.egfNames.map(egfName => html`
-                                    <${ComparisonWinnerCell}
-                                        winner=${pair.egfWinners[egfName]}
-                                        gtWinner=${pair.gtWinner}
-                                        hasGT=${pair.hasGT}
-                                        key=${egfName}
-                                    />
+            <div class="table-container virtual-table"
+                 style="height: ${Math.min(CONTAINER_HEIGHT, totalHeight + 50)}px; overflow-y: auto;"
+                 onScroll=${handleScroll}>
+                <div style="height: ${totalHeight}px; position: relative;">
+                    <table class="grades-table" style="position: absolute; top: ${offsetY}px; width: 100%;">
+                        <thead>
+                            <tr>
+                                <th>Essay A</th>
+                                <th>Essay B</th>
+                                <th>GT Winner</th>
+                                <th>GT Gap</th>
+                                ${appData.egfNames.map(name => html`
+                                    <th title=${name} key=${name}>${appData.egfLabels[name] || name}</th>
                                 `)}
                             </tr>
-                        `)}
-                    </tbody>
-                </table>
+                        </thead>
+                        <tbody>
+                            ${visiblePairs.map((pair, idx) => html`
+                                <tr class="grade-row" onClick=${() => onComparisonClick(pair)} key=${visibleStart + idx}>
+                                    <td>${getDisplayName(pair.subA)}</td>
+                                    <td>${getDisplayName(pair.subB)}</td>
+                                    <td class="grade-cell">${pair.gtWinner}</td>
+                                    <td class="grade-cell">${pair.gtGap}</td>
+                                    ${appData.egfNames.map(egfName => html`
+                                        <${ComparisonWinnerCell}
+                                            winner=${pair.egfWinners[egfName]}
+                                            gtWinner=${pair.gtWinner}
+                                            hasGT=${pair.hasGT}
+                                            key=${egfName}
+                                        />
+                                    `)}
+                                </tr>
+                            `)}
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </section>
     `;
@@ -928,7 +1034,29 @@ function GradeCell({ grade, gtGrade }) {
 }
 
 function GradesTable({ onRowClick }) {
-    const submissionIds = Object.keys(appData.submissions);
+    const submissionIds = useMemo(() => Object.keys(appData.submissions), []);
+
+    // Virtual scrolling configuration
+    const ROW_HEIGHT = 41;  // pixels per row (including border)
+    const CONTAINER_HEIGHT = 500;  // visible container height
+    const BUFFER = 5;  // extra rows to render above/below viewport
+
+    const [scrollTop, setScrollTop] = useState(0);
+    const containerRef = { current: null };  // Manual ref since no useRef
+
+    // Calculate visible range
+    const totalHeight = submissionIds.length * ROW_HEIGHT;
+    const visibleStart = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - BUFFER);
+    const visibleEnd = Math.min(
+        submissionIds.length,
+        Math.ceil((scrollTop + CONTAINER_HEIGHT) / ROW_HEIGHT) + BUFFER
+    );
+    const visibleIds = submissionIds.slice(visibleStart, visibleEnd);
+    const offsetY = visibleStart * ROW_HEIGHT;
+
+    const handleScroll = useCallback((e) => {
+        setScrollTop(e.target.scrollTop);
+    }, []);
 
     return html`
         <section class="grades-section">
@@ -938,41 +1066,46 @@ function GradesTable({ onRowClick }) {
                 <span style="color: var(--success);">exact match</span>,
                 <span style="color: var(--warning);">within 1</span>,
                 <span style="color: var(--danger);">2+ difference</span>
+                <span style="margin-left: 1rem; color: var(--gray-400);">(${submissionIds.length} submissions)</span>
             </p>
-            <div class="table-container">
-                <table class="grades-table">
-                    <thead>
-                        <tr>
-                            <th>Student</th>
-                            <th>GT</th>
-                            ${appData.egfNames.map(name => html`
-                                <th title=${name} key=${name}>${appData.egfLabels[name] || name}</th>
-                            `)}
-                        </tr>
-                    </thead>
-                    <tbody>
-                        ${submissionIds.map(sid => {
-                            const sub = appData.submissions[sid];
-                            const studentDisplay = sub.student_name || sub.student_id || sid;
-                            const gtGrade = sub.ground_truth_grade;
+            <div class="table-container virtual-table"
+                 style="height: ${CONTAINER_HEIGHT}px; overflow-y: auto;"
+                 onScroll=${handleScroll}>
+                <div style="height: ${totalHeight}px; position: relative;">
+                    <table class="grades-table" style="position: absolute; top: ${offsetY}px; width: 100%;">
+                        <thead>
+                            <tr>
+                                <th>Student</th>
+                                <th>GT</th>
+                                ${appData.egfNames.map(name => html`
+                                    <th title=${name} key=${name}>${appData.egfLabels[name] || name}</th>
+                                `)}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${visibleIds.map(sid => {
+                                const sub = appData.submissions[sid];
+                                const studentDisplay = sub.student_name || sub.student_id || sid;
+                                const gtGrade = sub.ground_truth_grade;
 
-                            return html`
-                                <tr class="grade-row" onClick=${() => onRowClick(sid)} key=${sid}>
-                                    <td>${studentDisplay}</td>
-                                    <td class="grade-cell">${gtGrade ?? '-'}</td>
-                                    ${appData.egfNames.map(egfName => {
-                                        const gradeDetail = appData.egfGrades[egfName]?.[sid];
-                                        return html`<${GradeCell}
-                                            grade=${gradeDetail?.grade}
-                                            gtGrade=${gtGrade}
-                                            key=${egfName}
-                                        />`;
-                                    })}
-                                </tr>
-                            `;
-                        })}
-                    </tbody>
-                </table>
+                                return html`
+                                    <tr class="grade-row" onClick=${() => onRowClick(sid)} key=${sid}>
+                                        <td>${studentDisplay}</td>
+                                        <td class="grade-cell">${gtGrade ?? '-'}</td>
+                                        ${appData.egfNames.map(egfName => {
+                                            const gradeDetail = appData.egfGrades[egfName]?.[sid];
+                                            return html`<${GradeCell}
+                                                grade=${gradeDetail?.grade}
+                                                gtGrade=${gtGrade}
+                                                key=${egfName}
+                                            />`;
+                                        })}
+                                    </tr>
+                                `;
+                            })}
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </section>
     `;
@@ -986,6 +1119,15 @@ function App() {
     const [comparisonModalOpen, setComparisonModalOpen] = useState(false);
     const [selectedComparison, setSelectedComparison] = useState(null);
     const [modalHistory, setModalHistory] = useState([]);
+    // Track when all data is loaded to trigger final re-render
+    const [allDataLoaded, setAllDataLoaded] = useState(false);
+
+    // Listen for data complete to trigger re-render with full data
+    useEffect(() => {
+        const handleComplete = () => setAllDataLoaded(true);
+        window.addEventListener('appDataComplete', handleComplete);
+        return () => window.removeEventListener('appDataComplete', handleComplete);
+    }, []);
 
     const openSubmissionModal = useCallback((submissionId, addToHistory = false) => {
         // If transitioning from another modal, save current state to history
@@ -1099,16 +1241,18 @@ function App() {
         openComparisonModal(pairData, true);  // Add to history
     }, [openComparisonModal]);
 
-    // Only render if we have data
+    // Show message if no submissions loaded yet (shouldn't happen if init timing is correct)
     if (!appData.submissions || Object.keys(appData.submissions).length === 0) {
-        return null;
+        return html`<div class="grades-section" style="text-align: center; padding: 2rem;">
+            <p style="color: var(--gray-500);">No submissions found in data.</p>
+        </div>`;
     }
 
     const canGoBack = modalHistory.length > 0;
 
     return html`
         <${GradesTable} onRowClick=${openSubmissionModal} />
-        <${ComparisonsTable} onComparisonClick=${openComparisonModal} />
+        <${ComparisonsTable} onComparisonClick=${openComparisonModal} key=${allDataLoaded ? 'loaded' : 'loading'} />
         <${Modal}
             isOpen=${submissionModalOpen}
             onClose=${closeAllModals}
@@ -1128,6 +1272,31 @@ function App() {
     `;
 }
 
-// Mount the app
-render(html`<${App} />`, document.getElementById('grades-app-mount'));
+// Initialize app - called when appData is ready
+function initializeApp() {
+    console.log('[initializeApp] Called, checking Preact globals...');
+    // Ensure Preact globals are available (set by inline bundle)
+    if (typeof render === 'undefined' || typeof html === 'undefined') {
+        console.error('[initializeApp] Preact not loaded yet, retrying...');
+        setTimeout(initializeApp, 50);
+        return;
+    }
+    console.log('[initializeApp] Preact ready, rendering App...');
+    const mountPoint = document.getElementById('grades-app-mount');
+    console.log('[initializeApp] Mount point:', mountPoint ? 'found' : 'NOT FOUND');
+
+    // Clear the mount point first to remove loading spinner
+    // This ensures clean replacement when Preact renders
+    if (mountPoint && !window._mountCleared) {
+        mountPoint.innerHTML = '';
+        window._mountCleared = true;
+    }
+
+    try {
+        render(html`<${App} />`, mountPoint);
+        console.log('[initializeApp] Render complete');
+    } catch (err) {
+        console.error('[initializeApp] Render failed:', err);
+    }
+}
 '''

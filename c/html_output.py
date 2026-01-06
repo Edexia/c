@@ -1,6 +1,7 @@
 """Self-contained HTML output generation for analysis results."""
 
 import base64
+import gzip
 import math
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +17,13 @@ from .core import (
 )
 from .html_template import generate_html_shell
 from .html_components import generate_preact_app
+
+
+def _compress_json(data: dict) -> str:
+    """Compress JSON data with gzip and return base64-encoded string."""
+    json_str = json.dumps(data, ensure_ascii=False, separators=(',', ':'))
+    compressed = gzip.compress(json_str.encode('utf-8'), compresslevel=9)
+    return base64.b64encode(compressed).decode('ascii')
 
 # Load icon as base64 at module level
 _ICON_BASE64: Optional[str] = None
@@ -62,9 +70,13 @@ def generate_html(result: FullAnalysisResult, noise_assumption: str = "expected"
     # Generate static sections (SVG charts, individual analyses)
     static_content = _generate_static_content(result, noise_assumption, timestamp)
 
-    # Build app data JSON for Preact
-    app_data = _build_app_data(result)
-    app_data_json = json.dumps(app_data, ensure_ascii=False)
+    # Build chunked app data and compress each chunk
+    # Chunks are loaded progressively for faster initial render
+    chunks = _build_chunked_app_data(result)
+    compressed_chunks = {
+        name: _compress_json(data) if data else ""
+        for name, data in chunks.items()
+    }
 
     # Generate CSS
     css = _generate_css()
@@ -78,7 +90,7 @@ def generate_html(result: FullAnalysisResult, noise_assumption: str = "expected"
         css=css,
         summary_comment=summary_comment,
         static_content=static_content,
-        app_data_json=app_data_json,
+        compressed_chunks=compressed_chunks,
         app_js=app_js,
     )
 
@@ -176,15 +188,28 @@ def _generate_comparison_accuracy_section(result: FullAnalysisResult) -> str:
     '''
 
 
-def _build_app_data(result: FullAnalysisResult) -> dict:
-    """Build the JSON data structure for the Preact app."""
+def _build_chunked_app_data(result: FullAnalysisResult) -> dict[str, dict]:
+    """Build chunked JSON data for progressive loading.
+
+    Returns dict with keys: 'core', 'submissions', 'grades', 'comparisons', 'llmCalls'
+    Each chunk is loaded and merged progressively for faster initial render.
+    """
     if not result.grades_table:
-        return {}
+        return {'core': {}}
 
     grades_table = result.grades_table
 
-    # Serialize submissions
+    # CHUNK 1: Core metadata (tiny, loads first)
+    core_data = {
+        'egfNames': grades_table.egf_names,
+        'egfLabels': grades_table.egf_labels,
+        'maxGrade': grades_table.max_grade,
+        'noiseAssumption': grades_table.noise_assumption,
+    }
+
+    # CHUNK 2: Submissions (without PDFs for now - PDFs loaded separately)
     submissions_data = {}
+    pdfs_data = {}  # Separate heavy PDFs
     for sid, sub in grades_table.submissions.items():
         submissions_data[sid] = {
             'submission_id': sub.submission_id,
@@ -193,21 +218,19 @@ def _build_app_data(result: FullAnalysisResult) -> dict:
             'essay_markdown': sub.essay_markdown,
             'ground_truth_grade': sub.ground_truth_grade,
             'gt_distribution': sub.gt_distribution,
-            'pdf_base64': sub.pdf_base64,
             'gt_justification': sub.gt_justification,
+            # pdf_base64 moved to separate chunk
         }
+        if sub.pdf_base64:
+            pdfs_data[sid] = sub.pdf_base64
 
-    # Serialize EGF grades
+    # CHUNK 3: Grades (medium size)
     egf_grades_data = {}
     for egf_name, grades in grades_table.egf_grades.items():
         egf_grades_data[egf_name] = {}
         for sid, grade in grades.items():
             llm_calls_data = [
-                {
-                    'call_id': call.call_id,
-                    'pass_number': call.pass_number,
-                    'raw_json': call.raw_json,
-                }
+                {'call_id': call.call_id, 'pass_number': call.pass_number}
                 for call in grade.llm_calls
             ]
             egf_grades_data[egf_name][sid] = {
@@ -218,7 +241,7 @@ def _build_app_data(result: FullAnalysisResult) -> dict:
                 'llm_calls': llm_calls_data,
             }
 
-    # Serialize comparisons
+    # CHUNK 4: Comparisons (medium size)
     egf_comparisons_data = {}
     for egf_name, comps_by_sub in grades_table.egf_comparisons.items():
         egf_comparisons_data[egf_name] = {}
@@ -238,15 +261,16 @@ def _build_app_data(result: FullAnalysisResult) -> dict:
                 for c in comps
             ]
 
+    # CHUNK 5: LLM Calls (heaviest - loaded last)
+    llm_calls_data = grades_table.all_llm_calls
+
     return {
+        'core': core_data,
         'submissions': submissions_data,
-        'egfGrades': egf_grades_data,
-        'egfComparisons': egf_comparisons_data,
-        'allLLMCalls': grades_table.all_llm_calls,  # All LLM calls by EGF name
-        'egfNames': grades_table.egf_names,
-        'egfLabels': grades_table.egf_labels,
-        'maxGrade': grades_table.max_grade,
-        'noiseAssumption': grades_table.noise_assumption,
+        'grades': egf_grades_data,
+        'comparisons': egf_comparisons_data,
+        'llmCalls': llm_calls_data,
+        'pdfs': pdfs_data,
     }
 
 
@@ -674,6 +698,19 @@ def _generate_css() -> str:
             padding: 0;
             box-sizing: border-box;
         }
+        /* Loading spinner for progressive loading */
+        .loading-spinner {
+            width: 40px;
+            height: 40px;
+            margin: 0 auto;
+            border: 3px solid var(--gray-200);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             line-height: 1.6;
@@ -1077,6 +1114,17 @@ def _generate_css() -> str:
         }
         .table-container .grades-table th {
             background: var(--gray-50);
+        }
+        /* Virtual scrolling table */
+        .table-container.virtual-table {
+            max-height: none;  /* Height set inline */
+        }
+        .virtual-table .grades-table th {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            background: white;
+            box-shadow: 0 1px 0 var(--gray-200);
         }
 
         /* LLM Calls Section */
