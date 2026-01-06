@@ -361,11 +361,17 @@ def bootstrap_comparison_accuracy(
     rng = np.random.default_rng(seed)
     accuracies = []
 
+    n_comparisons = len(comparisons)
+
     for _ in range(n_iterations):
+        # Resample comparisons with replacement (sampling variance)
+        indices = rng.integers(0, n_comparisons, size=n_comparisons)
+
         correct = 0
         valid = 0
 
-        for gt_a, gt_b, winner in comparisons:
+        for idx in indices:
+            gt_a, gt_b, winner = comparisons[idx]
             # Apply GT noise to both grades
             noised_a = apply_gt_noise(gt_a, rng, teacher_noise, min_grade, max_grade)
             noised_b = apply_gt_noise(gt_b, rng, teacher_noise, min_grade, max_grade)
@@ -390,6 +396,31 @@ def bootstrap_comparison_accuracy(
             accuracies.append(correct / valid)
 
     return _compute_ci(accuracies, confidence_level)
+
+
+def compute_raw_comparison_accuracy(
+    comparisons: list[tuple[int, int, str]],
+) -> tuple[float, int, int]:
+    """Compute raw comparison accuracy without noise.
+
+    Returns: (accuracy, n_correct, n_evaluated)
+    GT ties (gt_a == gt_b) are excluded from evaluation.
+    """
+    correct = 0
+    evaluated = 0
+
+    for gt_a, gt_b, winner in comparisons:
+        if gt_a == gt_b:
+            continue  # Can't evaluate GT ties
+
+        evaluated += 1
+        expected = "A" if gt_a > gt_b else "B"
+        if winner == expected:
+            correct += 1
+
+    if evaluated == 0:
+        return float('nan'), 0, 0
+    return correct / evaluated, correct, evaluated
 
 
 def bootstrap_comparison_accuracy_paired(
@@ -421,13 +452,6 @@ def bootstrap_comparison_accuracy_paired(
     rng = np.random.default_rng(seed)
     indices_list = sorted(by_idx.keys())
 
-    # Collect all unique (gt_a, gt_b) pairs across all files for noise caching
-    # We cache by the original grades since they determine the noise
-    all_grade_pairs: set[tuple[int, int]] = set()
-    for idx in indices_list:
-        for gt_a, gt_b, _ in by_idx[idx]:
-            all_grade_pairs.add((gt_a, gt_b))
-
     win_counts: dict[tuple[int, int], int] = {}
     valid_comparisons: dict[tuple[int, int], int] = {}
     accuracy_sums: dict[int, float] = {idx: 0.0 for idx in indices_list}
@@ -438,10 +462,28 @@ def bootstrap_comparison_accuracy_paired(
             win_counts[(i, j)] = 0
             valid_comparisons[(i, j)] = 0
 
+    # Pre-compute comparison counts for resampling
+    comparison_counts = {idx: len(by_idx[idx]) for idx in indices_list}
+
     for _ in range(n_iterations):
-        # Generate GT noise for all grade pairs (shared across files)
+        # Resample comparison indices for each file (sampling variance)
+        resampled_indices: dict[int, np.ndarray] = {}
+        for idx in indices_list:
+            n = comparison_counts[idx]
+            if n > 0:
+                resampled_indices[idx] = rng.integers(0, n, size=n)
+
+        # Collect grade pairs from resampled comparisons for GT noise caching
+        iteration_grade_pairs: set[tuple[int, int]] = set()
+        for idx in indices_list:
+            if idx in resampled_indices:
+                for i in resampled_indices[idx]:
+                    gt_a, gt_b, _ = by_idx[idx][i]
+                    iteration_grade_pairs.add((gt_a, gt_b))
+
+        # Generate GT noise for grade pairs used in this iteration (shared across files)
         gt_noise_cache: dict[tuple[int, int], tuple[int, int]] = {}
-        for gt_a, gt_b in all_grade_pairs:
+        for gt_a, gt_b in iteration_grade_pairs:
             noised_a = apply_gt_noise(gt_a, rng, teacher_noise, min_grade, max_grade)
             noised_b = apply_gt_noise(gt_b, rng, teacher_noise, min_grade, max_grade)
             gt_noise_cache[(gt_a, gt_b)] = (noised_a, noised_b)
@@ -452,7 +494,12 @@ def bootstrap_comparison_accuracy_paired(
             correct = 0
             valid = 0
 
-            for gt_a, gt_b, winner in by_idx[idx]:
+            if idx not in resampled_indices:
+                accuracies[idx] = float('nan')
+                continue
+
+            for i in resampled_indices[idx]:
+                gt_a, gt_b, winner = by_idx[idx][i]
                 noised_a, noised_b = gt_noise_cache[(gt_a, gt_b)]
 
                 # Skip if grades are now equal

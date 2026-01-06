@@ -48,6 +48,7 @@ from .bootstrap import (
     get_default_stability_vector,
     bootstrap_comparison_accuracy,
     bootstrap_comparison_accuracy_paired,
+    compute_raw_comparison_accuracy,
 )
 from .html_output import save_html_report
 from .core import FullAnalysisResult
@@ -529,13 +530,14 @@ def run_analysis(
                             max_grade=max_grade,
                         )
                         n_external = len(all_comparisons) - len(edf_comparisons)
+                        raw_acc, _, _ = compute_raw_comparison_accuracy(tuples)
                         comparison_accuracy[egf_data.name] = ComparisonAccuracyResult(
-                            raw_accuracy=acc_ci[0],
+                            raw_accuracy=raw_acc,
                             n_comparisons=len(tuples),
                             n_excluded_external=n_external,
                             accuracy_ci=acc_ci,
                         )
-                        print(f"  {egf_data.name}: {len(tuples)} comparisons, accuracy {acc_ci[0]:.1%} [{acc_ci[1]:.1%}, {acc_ci[2]:.1%}]")
+                        print(f"  {egf_data.name}: {len(tuples)} comparisons, raw accuracy {raw_acc:.1%}, CI [{acc_ci[1]:.1%}, {acc_ci[2]:.1%}]")
                     else:
                         all_have_comparisons = False
                         print(f"  {egf_data.name}: No valid comparison tuples")

@@ -167,7 +167,8 @@ def _generate_comparison_accuracy_section(result: FullAnalysisResult) -> str:
     <section class="comparison-accuracy">
         <h2>Comparison Accuracy</h2>
         <p>Accuracy of pairwise comparisons against ground truth grade ordering.
-           Comparisons where noised GT grades are equal are excluded from each bootstrap iteration.</p>
+           Only comparisons with both GT grades are measured. GT ties are excluded from raw accuracy.
+           For CI, comparisons where noised GT grades become equal are excluded from each bootstrap iteration.</p>
         <div class="chart">{chart_svg}</div>
         {matrix_section}
         <ul class="accuracy-stats">{" ".join(stats_items)}</ul>
@@ -870,6 +871,10 @@ def _generate_css() -> str:
         .grade-far {
             color: var(--danger);
         }
+        .grade-neutral {
+            background-color: var(--gray-100);
+            color: var(--gray-500);
+        }
 
         /* Modal */
         .modal-overlay {
@@ -901,12 +906,27 @@ def _generate_css() -> str:
             padding: 1.5rem;
             border-bottom: 1px solid var(--gray-200);
             display: flex;
-            justify-content: space-between;
             align-items: center;
+            gap: 0.75rem;
         }
         .modal-header h3 {
             margin: 0;
             font-size: 1.25rem;
+            flex: 1;
+        }
+        .modal-back {
+            background: none;
+            border: none;
+            font-size: 1.25rem;
+            cursor: pointer;
+            color: var(--gray-600);
+            padding: 0.25rem 0.5rem;
+            line-height: 1;
+            border-radius: 4px;
+        }
+        .modal-back:hover {
+            color: var(--gray-900);
+            background: var(--gray-100);
         }
         .modal-close {
             background: none;

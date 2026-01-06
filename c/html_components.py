@@ -502,7 +502,7 @@ function EGFTab({ gradeDetail, maxGrade, egfLabel }) {
 
 // ============ Comparison Modal Component ============
 
-function ComparisonPairModal({ isOpen, onClose, pairData, onSubmissionClick }) {
+function ComparisonPairModal({ isOpen, onClose, pairData, onSubmissionClick, onBack, canGoBack }) {
     const [activeEGF, setActiveEGF] = useState(0);
 
     useEffect(() => {
@@ -548,6 +548,7 @@ function ComparisonPairModal({ isOpen, onClose, pairData, onSubmissionClick }) {
         <div class="modal-overlay active" onClick=${handleOverlayClick}>
             <div class="modal-content" style="max-width: 900px;">
                 <div class="modal-header">
+                    ${canGoBack && html`<button class="modal-back" onClick=${onBack}>←</button>`}
                     <h3>Comparison Details</h3>
                     <button class="modal-close" onClick=${onClose}>×</button>
                 </div>
@@ -633,7 +634,7 @@ function ComparisonPairModal({ isOpen, onClose, pairData, onSubmissionClick }) {
 
 // ============ Submission Modal Component ============
 
-function Modal({ isOpen, onClose, submissionId, onComparisonClick }) {
+function Modal({ isOpen, onClose, submissionId, onComparisonClick, onBack, canGoBack }) {
     const [activeTab, setActiveTab] = useState('essay');
 
     useEffect(() => {
@@ -695,6 +696,7 @@ function Modal({ isOpen, onClose, submissionId, onComparisonClick }) {
         <div class="modal-overlay active" onClick=${handleOverlayClick}>
             <div class="modal-content">
                 <div class="modal-header">
+                    ${canGoBack && html`<button class="modal-back" onClick=${onBack}>←</button>`}
                     <h3>${title}</h3>
                     <button class="modal-close" onClick=${onClose}>×</button>
                 </div>
@@ -742,15 +744,19 @@ function Modal({ isOpen, onClose, submissionId, onComparisonClick }) {
 
 // ============ Comparisons Table Component ============
 
-function ComparisonWinnerCell({ winner, gtWinner }) {
+function ComparisonWinnerCell({ winner, gtWinner, hasGT }) {
     // winner: "A", "B", "", "TIE", undefined
-    // gtWinner: "A", "B", "-" (tie)
+    // gtWinner: "A", "B", "-" (tie or no GT)
+    // hasGT: boolean - whether both submissions have GT grades
     let className = 'grade-cell';
 
     const normalizedWinner = winner?.toUpperCase() || '';
     const displayWinner = normalizedWinner === 'TIE' ? '-' : (normalizedWinner || '-');
 
-    if (gtWinner && gtWinner !== '-' && normalizedWinner) {
+    if (!hasGT && normalizedWinner) {
+        // No GT grades available - show gray background
+        className += ' grade-neutral';
+    } else if (gtWinner && gtWinner !== '-' && normalizedWinner) {
         if (normalizedWinner === gtWinner) {
             className += ' grade-match';  // Correct prediction
         } else if (normalizedWinner === 'TIE') {
@@ -785,10 +791,7 @@ function ComparisonsTable({ onComparisonClick }) {
                     // Check if both submissions have GT grades
                     const gtA = appData.submissions[subA]?.ground_truth_grade;
                     const gtB = appData.submissions[subB]?.ground_truth_grade;
-
-                    if (gtA === null || gtA === undefined || gtB === null || gtB === undefined) {
-                        continue;  // Skip if either lacks GT grade
-                    }
+                    const hasGT = gtA !== null && gtA !== undefined && gtB !== null && gtB !== undefined;
 
                     // Create canonical key (always same order)
                     const key = subA < subB ? `${subA}|${subB}` : `${subB}|${subA}`;
@@ -798,18 +801,23 @@ function ComparisonsTable({ onComparisonClick }) {
                         const [canonicalA, canonicalB] = subA < subB ? [subA, subB] : [subB, subA];
                         const [canonicalGtA, canonicalGtB] = subA < subB ? [gtA, gtB] : [gtB, gtA];
 
-                        // Compute GT winner
+                        // Compute GT winner (only if both GT grades exist)
                         let gtWinner = '-';
-                        if (canonicalGtA > canonicalGtB) gtWinner = 'A';
-                        else if (canonicalGtA < canonicalGtB) gtWinner = 'B';
+                        let gtGap = '-';
+                        if (hasGT) {
+                            if (canonicalGtA > canonicalGtB) gtWinner = 'A';
+                            else if (canonicalGtA < canonicalGtB) gtWinner = 'B';
+                            gtGap = Math.abs(canonicalGtA - canonicalGtB);
+                        }
 
                         pairMap.set(key, {
                             subA: canonicalA,
                             subB: canonicalB,
                             gtA: canonicalGtA,
                             gtB: canonicalGtB,
+                            hasGT,
                             gtWinner,
-                            gtGap: Math.abs(canonicalGtA - canonicalGtB),
+                            gtGap,
                             egfWinners: {},
                             comparisons: [],  // Store actual comparison objects by EGF
                         });
@@ -820,24 +828,33 @@ function ComparisonsTable({ onComparisonClick }) {
                     if (isFlipped && (winner === 'A' || winner === 'B')) {
                         winner = winner === 'A' ? 'B' : 'A';
                     }
-                    pairMap.get(key).egfWinners[egfName] = winner;
+
+                    const pair = pairMap.get(key);
+                    pair.egfWinners[egfName] = winner;
 
                     // Store the comparison object (adjusted for canonical order)
-                    const adjustedComp = isFlipped ? {
-                        ...comp,
-                        submission_a: subB,
-                        submission_b: subA,
-                        winner: winner,
-                    } : { ...comp, winner: winner };
-                    pairMap.get(key).comparisons.push({ egfName, comparison: adjustedComp });
+                    // Only add if we haven't already added one for this EGF
+                    if (!pair.comparisons.some(c => c.egfName === egfName)) {
+                        const adjustedComp = isFlipped ? {
+                            ...comp,
+                            submission_a: subB,
+                            submission_b: subA,
+                            winner: winner,
+                        } : { ...comp, winner: winner };
+                        pair.comparisons.push({ egfName, comparison: adjustedComp });
+                    }
                 }
             }
         }
 
-        // Convert to array and sort by (subA, subB)
+        // Convert to array and sort: GT comparisons first (by gap descending), then no-GT comparisons
         return Array.from(pairMap.values()).sort((a, b) => {
-            if (a.subA !== b.subA) return a.subA.localeCompare(b.subA);
-            return a.subB.localeCompare(b.subB);
+            // No-GT comparisons go to the end
+            if (a.hasGT && !b.hasGT) return -1;
+            if (!a.hasGT && b.hasGT) return 1;
+            if (!a.hasGT && !b.hasGT) return 0;
+            // Both have GT: sort by gap descending
+            return b.gtGap - a.gtGap;
         });
     }, []);
 
@@ -852,13 +869,13 @@ function ComparisonsTable({ onComparisonClick }) {
 
     return html`
         <section class="grades-section">
-            <h2>Annotated Comparisons</h2>
+            <h2>Comparisons</h2>
             <p style="color: var(--gray-600); font-size: 0.875rem; margin-bottom: 1rem;">
-                Pairwise comparisons where both submissions have ground truth grades.
-                Click a row to view details.
+                Pairwise comparisons. Click a row to view details.
                 Colors: <span style="color: var(--success);">correct</span>,
                 <span style="color: var(--warning);">tie vs winner</span>,
-                <span style="color: var(--danger);">wrong winner</span>.
+                <span style="color: var(--danger);">wrong winner</span>,
+                <span style="color: var(--gray-500);">no GT (unevaluable)</span>.
             </p>
             <div class="table-container">
                 <table class="grades-table">
@@ -884,6 +901,7 @@ function ComparisonsTable({ onComparisonClick }) {
                                     <${ComparisonWinnerCell}
                                         winner=${pair.egfWinners[egfName]}
                                         gtWinner=${pair.gtWinner}
+                                        hasGT=${pair.hasGT}
                                         key=${egfName}
                                     />
                                 `)}
@@ -967,41 +985,61 @@ function App() {
     const [selectedSubmission, setSelectedSubmission] = useState(null);
     const [comparisonModalOpen, setComparisonModalOpen] = useState(false);
     const [selectedComparison, setSelectedComparison] = useState(null);
+    const [modalHistory, setModalHistory] = useState([]);
 
-    const openSubmissionModal = useCallback((submissionId) => {
-        // Close comparison modal if open
+    const openSubmissionModal = useCallback((submissionId, addToHistory = false) => {
+        // If transitioning from another modal, save current state to history
+        if (addToHistory && comparisonModalOpen && selectedComparison) {
+            setModalHistory(prev => [...prev, { type: 'comparison', data: selectedComparison }]);
+        }
         setComparisonModalOpen(false);
         setSelectedSubmission(submissionId);
         setSubmissionModalOpen(true);
         document.body.style.overflow = 'hidden';
-    }, []);
+    }, [comparisonModalOpen, selectedComparison]);
 
-    const closeSubmissionModal = useCallback(() => {
+    const openComparisonModal = useCallback((pairData, addToHistory = false) => {
+        // If transitioning from another modal, save current state to history
+        if (addToHistory && submissionModalOpen && selectedSubmission) {
+            setModalHistory(prev => [...prev, { type: 'submission', data: selectedSubmission }]);
+        }
         setSubmissionModalOpen(false);
-        document.body.style.overflow = '';
-    }, []);
-
-    const openComparisonModal = useCallback((pairData) => {
         setSelectedComparison(pairData);
         setComparisonModalOpen(true);
         document.body.style.overflow = 'hidden';
-    }, []);
+    }, [submissionModalOpen, selectedSubmission]);
 
-    const closeComparisonModal = useCallback(() => {
+    const closeAllModals = useCallback(() => {
+        setSubmissionModalOpen(false);
         setComparisonModalOpen(false);
+        setModalHistory([]);
         document.body.style.overflow = '';
     }, []);
 
+    const handleBack = useCallback(() => {
+        if (modalHistory.length === 0) return;
+
+        const prev = modalHistory[modalHistory.length - 1];
+        setModalHistory(h => h.slice(0, -1));
+
+        if (prev.type === 'submission') {
+            setComparisonModalOpen(false);
+            setSelectedSubmission(prev.data);
+            setSubmissionModalOpen(true);
+        } else if (prev.type === 'comparison') {
+            setSubmissionModalOpen(false);
+            setSelectedComparison(prev.data);
+            setComparisonModalOpen(true);
+        }
+    }, [modalHistory]);
+
     // Handler for clicking on essay from comparison modal
     const handleComparisonSubmissionClick = useCallback((submissionId) => {
-        closeComparisonModal();
-        openSubmissionModal(submissionId);
-    }, [closeComparisonModal, openSubmissionModal]);
+        openSubmissionModal(submissionId, true);
+    }, [openSubmissionModal]);
 
     // Handler for clicking a comparison from submission modal's comparisons tab
     const handleSubmissionComparisonClick = useCallback((comparison) => {
-        closeSubmissionModal();
-
         // Build pairData from the comparison
         const subA = comparison.submission_a;
         const subB = comparison.submission_b;
@@ -1014,9 +1052,11 @@ function App() {
             else if (gtA < gtB) gtWinner = 'B';
         }
 
-        // Find all comparisons for this pair across EGFs
+        // Find all comparisons for this pair across EGFs (one per EGF)
         const comparisons = [];
+        const seenEGFs = new Set();
         for (const egfName of appData.egfNames) {
+            if (seenEGFs.has(egfName)) continue;
             const egfComps = appData.egfComparisons?.[egfName] || {};
             let found = false;
             for (const subId of Object.keys(egfComps)) {
@@ -1038,6 +1078,7 @@ function App() {
                                 winner
                             }
                         });
+                        seenEGFs.add(egfName);
                         found = true;
                         break;  // Found for this EGF
                     }
@@ -1055,28 +1096,34 @@ function App() {
             comparisons
         };
 
-        openComparisonModal(pairData);
-    }, [closeSubmissionModal, openComparisonModal]);
+        openComparisonModal(pairData, true);  // Add to history
+    }, [openComparisonModal]);
 
     // Only render if we have data
     if (!appData.submissions || Object.keys(appData.submissions).length === 0) {
         return null;
     }
 
+    const canGoBack = modalHistory.length > 0;
+
     return html`
         <${GradesTable} onRowClick=${openSubmissionModal} />
         <${ComparisonsTable} onComparisonClick=${openComparisonModal} />
         <${Modal}
             isOpen=${submissionModalOpen}
-            onClose=${closeSubmissionModal}
+            onClose=${closeAllModals}
             submissionId=${selectedSubmission}
             onComparisonClick=${handleSubmissionComparisonClick}
+            onBack=${handleBack}
+            canGoBack=${canGoBack}
         />
         <${ComparisonPairModal}
             isOpen=${comparisonModalOpen}
-            onClose=${closeComparisonModal}
+            onClose=${closeAllModals}
             pairData=${selectedComparison}
             onSubmissionClick=${handleComparisonSubmissionClick}
+            onBack=${handleBack}
+            canGoBack=${canGoBack}
         />
     `;
 }
