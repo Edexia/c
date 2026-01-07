@@ -62,54 +62,6 @@ window.addEventListener('appDataComplete', () => {
 
 // ============ Utility Functions ============
 
-function parseMarkdown(md) {
-    if (!md) return '<em class="text-gray">No content available</em>';
-
-    let html = md
-        // Escape HTML first
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        // Code blocks (before other processing)
-        .replace(/```([\\s\\S]*?)```/g, '<pre><code>$1</code></pre>')
-        // Inline code
-        .replace(/`([^`]+)`/g, '<code>$1</code>')
-        // Headers
-        .replace(/^### (.*)$/gm, '<h3>$1</h3>')
-        .replace(/^## (.*)$/gm, '<h2>$1</h2>')
-        .replace(/^# (.*)$/gm, '<h1>$1</h1>')
-        // Bold and Italic
-        .replace(/\\*\\*\\*(.+?)\\*\\*\\*/g, '<strong><em>$1</em></strong>')
-        .replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>')
-        .replace(/\\*(.+?)\\*/g, '<em>$1</em>')
-        .replace(/___(.+?)___/g, '<strong><em>$1</em></strong>')
-        .replace(/__(.+?)__/g, '<strong>$1</strong>')
-        .replace(/_(.+?)_/g, '<em>$1</em>')
-        // Blockquotes
-        .replace(/^> (.*)$/gm, '<blockquote>$1</blockquote>')
-        // Unordered lists
-        .replace(/^[\\*\\-] (.*)$/gm, '<li>$1</li>')
-        // Ordered lists
-        .replace(/^\\d+\\. (.*)$/gm, '<li>$1</li>')
-        // Line breaks
-        .replace(/\\n\\n/g, '</p><p>')
-        .replace(/\\n/g, '<br>');
-
-    // Wrap in paragraphs if not already wrapped
-    if (!html.startsWith('<')) {
-        html = '<p>' + html + '</p>';
-    }
-
-    // Clean up consecutive blockquotes
-    html = html.replace(/<\\/blockquote>\\s*<blockquote>/g, '<br>');
-
-    // Wrap lists
-    html = html.replace(/(<li>.*<\\/li>)/gs, '<ul>$1</ul>');
-    html = html.replace(/<\\/ul>\\s*<ul>/g, '');
-
-    return html;
-}
-
 function highlightMarkdownSource(md) {
     if (!md) return '<em class="text-gray">No content available</em>';
 
@@ -132,6 +84,10 @@ function highlightMarkdownSource(md) {
     html = html.replace(/(\\*\\*[^*]+\\*\\*)/g, '<span class="md-bold">$1</span>');
     html = html.replace(/(__[^_]+__)/g, '<span class="md-bold">$1</span>');
 
+    // Italic with * or _ (after bold to avoid conflicts)
+    html = html.replace(/(?<!\\*)\\*([^*]+)\\*(?!\\*)/g, '<span class="md-italic">*$1*</span>');
+    html = html.replace(/(?<!_)_([^_]+)_(?!_)/g, '<span class="md-italic">_$1_</span>');
+
     // Inline code (backticks, not inside code blocks)
     html = html.replace(/(`[^`]+`)/g, '<span class="md-code">$1</span>');
 
@@ -145,7 +101,7 @@ function highlightMarkdownSource(md) {
     // Blockquotes
     html = html.replace(/^(&gt; .*)/gm, '<span class="md-blockquote">$1</span>');
 
-    return '<div class="markdown-source">' + html + '</div>';
+    return html;
 }
 
 function extractLLMOutput(rawJson) {
@@ -271,14 +227,22 @@ function generateHistogramSVG(distribution, maxGrade, width, height) {
         return '<em class="text-gray">No distribution data</em>';
     }
 
-    const barWidth = width / distribution.length;
-    const maxProb = Math.max(...distribution) || 1;
+    const leftMargin = 30;  // Space for Y-axis labels
+    const chartWidth = width - leftMargin;
+    const barWidth = chartWidth / distribution.length;
+    const rawMax = Math.max(...distribution) || 1;
+    const maxProb = Math.ceil(rawMax * 10) / 10;  // Round up to nearest 0.1
     const chartHeight = height - 25;
+
+    // Y-axis labels and line
+    let yAxis = `<text x="${leftMargin - 5}" y="12" text-anchor="end" font-size="9" fill="#6b7280">${maxProb.toFixed(1)}</text>`;
+    yAxis += `<text x="${leftMargin - 5}" y="${chartHeight}" text-anchor="end" font-size="9" fill="#6b7280">0</text>`;
+    yAxis += `<line x1="${leftMargin}" y1="0" x2="${leftMargin}" y2="${chartHeight}" stroke="#e5e7eb" stroke-width="1"/>`;
 
     let bars = '';
     distribution.forEach((prob, i) => {
         const barHeight = (prob / maxProb) * chartHeight;
-        const x = i * barWidth;
+        const x = leftMargin + i * barWidth;
         const y = chartHeight - barHeight;
         const opacity = prob > 0 ? 0.7 + (prob / maxProb) * 0.3 : 0.1;
         bars += `<rect x="${x}" y="${y}" width="${barWidth - 1}" height="${barHeight}" fill="#3b82f6" opacity="${opacity}"/>`;
@@ -289,6 +253,7 @@ function generateHistogramSVG(distribution, maxGrade, width, height) {
 
     return `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
         <rect width="100%" height="100%" fill="#f9fafb" rx="4"/>
+        ${yAxis}
         ${bars}
     </svg>`;
 }
@@ -335,11 +300,11 @@ function CollapsibleSection({ title, defaultOpen = false, children }) {
 
 function MarkdownContent({ content }) {
     return html`<div class="markdown-content"
-        dangerouslySetInnerHTML=${{ __html: parseMarkdown(content) }} />`;
+        dangerouslySetInnerHTML=${{ __html: highlightMarkdownSource(content) }} />`;
 }
 
 function MarkdownSource({ content }) {
-    return html`<div
+    return html`<div class="markdown-source"
         dangerouslySetInnerHTML=${{ __html: highlightMarkdownSource(content) }} />`;
 }
 
@@ -512,13 +477,33 @@ function EssayTab({ submission }) {
 }
 
 function PDFTab({ submission }) {
-    if (!submission.pdf_base64) {
+    const [pdfData, setPdfData] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [checked, setChecked] = useState(false);
+
+    useEffect(() => {
+        setLoading(true);
+        setChecked(false);
+        getPdf(submission.id).then(data => {
+            setPdfData(data);
+            setLoading(false);
+            setChecked(true);
+        });
+    }, [submission.id]);
+
+    if (loading) {
+        return html`<div class="pdf-loading">
+            <em class="text-gray">Loading PDF...</em>
+        </div>`;
+    }
+
+    if (!pdfData) {
         return html`<div class="pdf-not-available">
             <em class="text-gray">No PDF available for this submission</em>
         </div>`;
     }
 
-    const pdfUrl = 'data:application/pdf;base64,' + submission.pdf_base64;
+    const pdfUrl = 'data:application/pdf;base64,' + pdfData;
     return html`
         <div class="pdf-container">
             <iframe src=${pdfUrl} class="pdf-viewer"></iframe>
@@ -550,7 +535,26 @@ function GroundTruthTab({ submission, maxGrade, noiseAssumption }) {
     `;
 }
 
-function EGFTab({ gradeDetail, maxGrade, egfLabel, egfName = null }) {
+function EGFComparisonsSection({ egfName, submissionId, onComparisonClick }) {
+    const comparisons = appData.egfComparisons?.[egfName]?.[submissionId] || [];
+    if (comparisons.length === 0) return null;
+
+    return html`
+        <div class="comparisons-section">
+            <h4>Comparisons (${comparisons.length})</h4>
+            ${comparisons.map(comp => html`
+                <${ComparisonCard}
+                    comparison=${comp}
+                    submissions=${appData.submissions}
+                    onExpand=${() => onComparisonClick(comp)}
+                    key=${comp.comparison_id}
+                />
+            `)}
+        </div>
+    `;
+}
+
+function EGFTab({ gradeDetail, maxGrade, egfLabel, egfName = null, submissionId = null, onComparisonClick = null }) {
     if (!gradeDetail) {
         return html`<p class="text-gray">Not graded by ${egfLabel}</p>`;
     }
@@ -573,6 +577,13 @@ function EGFTab({ gradeDetail, maxGrade, egfLabel, egfName = null }) {
                     <h4>Justification</h4>
                     <${MarkdownContent} content=${gradeDetail.justification} />
                 </div>
+            `}
+            ${submissionId && onComparisonClick && html`
+                <${EGFComparisonsSection}
+                    egfName=${egfName}
+                    submissionId=${submissionId}
+                    onComparisonClick=${onComparisonClick}
+                />
             `}
             <${LLMCallsSection} calls=${gradeDetail.llm_calls} egfName=${egfName} />
         </div>
@@ -729,22 +740,6 @@ function Modal({ isOpen, onClose, submissionId, onComparisonClick, onBack, canGo
 
     const title = submission.student_name || submission.student_id || submissionId;
 
-    // Gather all comparisons for this submission across all EGFs
-    const allComparisons = useMemo(() => {
-        const result = [];
-        const seen = new Set();
-        for (const egfName of appData.egfNames) {
-            const egfComps = appData.egfComparisons?.[egfName]?.[submissionId] || [];
-            for (const comp of egfComps) {
-                if (!seen.has(comp.comparison_id)) {
-                    seen.add(comp.comparison_id);
-                    result.push(comp);
-                }
-            }
-        }
-        return result;
-    }, [submissionId]);
-
     // Build tabs
     const tabs = [
         { id: 'essay', label: 'Essay' },
@@ -756,10 +751,6 @@ function Modal({ isOpen, onClose, submissionId, onComparisonClick, onBack, canGo
             egfName: name
         })),
     ];
-
-    if (allComparisons.length > 0) {
-        tabs.push({ id: 'comparisons', label: `Comparisons (${allComparisons.length})` });
-    }
 
     const handleOverlayClick = (e) => {
         if (e.target.classList.contains('modal-overlay')) onClose();
@@ -805,17 +796,12 @@ function Modal({ isOpen, onClose, submissionId, onComparisonClick, onBack, canGo
                                 maxGrade=${appData.maxGrade}
                                 egfLabel=${tab.label}
                                 egfName=${tab.egfName}
+                                submissionId=${submissionId}
+                                onComparisonClick=${onComparisonClick}
                                 key=${tab.id}
                             />
                         `
                     )}
-                    ${activeTab === 'comparisons' && html`
-                        <${ComparisonsTab}
-                            comparisons=${allComparisons}
-                            submissions=${appData.submissions}
-                            onComparisonClick=${onComparisonClick}
-                        />
-                    `}
                 </div>
             </div>
         </div>

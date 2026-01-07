@@ -1,6 +1,6 @@
 [project]
 name = "c"
-version = "0.4.4"
+version = "0.4.5"
 description = "CLI tool for analyzing EGF grading results against EDF ground truth"
 readme = "README.md"
 requires-python = ">=3.14"

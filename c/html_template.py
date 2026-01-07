@@ -106,14 +106,6 @@ function mergeChunk(chunkName, data) {
         case 'llmCalls':
             window.appData.allLLMCalls = data;
             break;
-        case 'pdfs':
-            // Merge PDFs into submissions
-            for (const [sid, pdf] of Object.entries(data)) {
-                if (window.appData.submissions[sid]) {
-                    window.appData.submissions[sid].pdf_base64 = pdf;
-                }
-            }
-            break;
     }
 
     window.appDataLoadState.chunksLoaded++;
@@ -129,9 +121,9 @@ function mergeChunk(chunkName, data) {
     }));
 }
 
-// Load all chunks progressively
+// Load all chunks progressively (PDFs are lazy-loaded separately)
 async function loadAllChunks() {
-    const chunkOrder = ['core', 'submissions', 'grades', 'comparisons', 'llmCalls', 'pdfs'];
+    const chunkOrder = ['core', 'submissions', 'grades', 'comparisons', 'llmCalls'];
 
     // Count actual chunks that exist and have content
     let actualChunks = 0;
@@ -146,6 +138,9 @@ async function loadAllChunks() {
         if (el && el.textContent.trim()) {
             try {
                 const data = await decompressChunk(el.textContent.trim());
+                // Free memory: clear DOM element after reading
+                el.textContent = '';
+                el.remove();
                 mergeChunk(chunkName, data);
             } catch (e) {
                 console.error('Failed to load chunk:', chunkName, e);
@@ -161,6 +156,30 @@ async function loadAllChunks() {
     // Signal complete
     window.dispatchEvent(new CustomEvent('appDataComplete'));
 }
+
+// Lazy PDF loader - decompresses PDFs on-demand when user views them
+window._pdfsLoaded = false;
+async function getPdf(submissionId) {
+    // Return cached if already loaded
+    if (window.appData.pdfs[submissionId]) {
+        return window.appData.pdfs[submissionId];
+    }
+
+    // First PDF request - decompress the entire chunk once
+    if (!window._pdfsLoaded) {
+        const el = document.getElementById('chunk-pdfs');
+        if (el && el.textContent.trim()) {
+            const data = await decompressChunk(el.textContent.trim());
+            el.textContent = '';
+            el.remove();
+            window.appData.pdfs = data;
+        }
+        window._pdfsLoaded = true;
+    }
+
+    return window.appData.pdfs[submissionId] || null;
+}
+window.getPdf = getPdf;
 
 // Start loading when DOM is ready
 if (document.readyState === 'loading') {

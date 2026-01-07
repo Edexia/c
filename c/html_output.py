@@ -1009,56 +1009,50 @@ def _generate_css() -> str:
             flex: 1;
         }
 
-        /* Markdown Content */
+        /* Markdown Content - Syntax Highlighted Source View */
         .markdown-content {
-            line-height: 1.8;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 0.875rem;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            word-wrap: break-word;
         }
-        .markdown-content h1 {
-            font-size: 1.5rem;
-            margin: 1.5rem 0 0.75rem 0;
-            border-bottom: 1px solid var(--gray-200);
-            padding-bottom: 0.5rem;
+        .markdown-content .md-header {
+            color: var(--primary);
+            font-weight: bold;
         }
-        .markdown-content h2 {
-            font-size: 1.25rem;
-            margin: 1.25rem 0 0.5rem 0;
+        .markdown-content .md-bold {
+            font-weight: bold;
         }
-        .markdown-content h3 {
-            font-size: 1.1rem;
-            margin: 1rem 0 0.5rem 0;
+        .markdown-content .md-italic {
+            font-style: italic;
         }
-        .markdown-content p {
-            margin-bottom: 1rem;
-        }
-        .markdown-content ul, .markdown-content ol {
-            margin: 0 0 1rem 1.5rem;
-        }
-        .markdown-content li {
-            margin-bottom: 0.25rem;
-        }
-        .markdown-content code {
+        .markdown-content .md-code {
             background: var(--gray-100);
-            padding: 0.2rem 0.4rem;
+            padding: 0.1rem 0.3rem;
+            border-radius: 3px;
+        }
+        .markdown-content .md-code-block {
+            display: block;
+            background: var(--gray-100);
+            padding: 0.5rem;
             border-radius: 4px;
-            font-family: ui-monospace, monospace;
-            font-size: 0.875em;
+            margin: 0.5rem 0;
         }
-        .markdown-content pre {
-            background: var(--gray-100);
-            padding: 1rem;
-            border-radius: 8px;
-            overflow-x: auto;
-            margin-bottom: 1rem;
+        .markdown-content .md-link {
+            color: var(--primary);
         }
-        .markdown-content pre code {
-            background: none;
-            padding: 0;
+        .markdown-content .md-list {
+            color: var(--gray-500);
         }
-        .markdown-content blockquote {
-            border-left: 4px solid var(--gray-300);
-            padding-left: 1rem;
-            margin: 1rem 0;
+        .markdown-content .md-blockquote {
             color: var(--gray-600);
+            border-left: 3px solid var(--gray-300);
+            padding-left: 0.75rem;
+            display: block;
+        }
+        .markdown-content .md-hr {
+            color: var(--gray-400);
         }
 
         /* Grade Display */
